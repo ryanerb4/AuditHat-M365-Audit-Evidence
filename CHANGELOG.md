@@ -31,6 +31,13 @@ First public release.
   anti-phishing, Safe Links, Safe Attachments, Defender for Endpoint devices and scores.
 - Directory synchronization status (Entra Connect, on-premises AD domains, sync server) and a link to
   the companion AuditHat AD Governance Report.
+- Indications of compromise is section 2, directly after the Executive Summary, and opens with a
+  situation table (Urgent / Review / Clear / Not checked, what we found, why it matters). New
+  indicators: mail forwarded outside the organization, known-abused OAuth applications (matched by
+  application ID), unverified-publisher apps with mail or file access, Anyone links and external
+  sharing events, unusual download and sync volume per user, mailbox rule and permission changes with
+  actor and IP address (all from the unified audit log via Search-UnifiedAuditLog), and malicious
+  link clicks from Safe Links. `-SkipAuditLog` skips the audit log search.
 - This-week (Critical) defaults for financial institutions: Teams guest and external access, device join
   open to all users, single Global Administrator, mobile device compliance (new control "Intune
   compliance policies for mobile devices"), and Secure Score actions for anonymous meeting join, lobby

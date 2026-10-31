@@ -30,11 +30,11 @@ its existing staff and IT provider, and that auditors and examiners recognise as
 
 | Cadence | Who | What happens |
 |---|---|---|
-| **Monthly** | Security officer or IT provider / MSP | Run the script (10 to 30 minutes). Work section 3 (review these now: indications of compromise) the same day. Turn the Remediation Plan into tickets (Copy ticket / CSV) and assign owners. File the report in the evidence folder; the history file updates itself |
+| **Monthly** | Security officer or IT provider / MSP | Run the script (10 to 30 minutes). Work section 2 (review these now: indications of compromise) the same day. Turn the Remediation Plan into tickets (Copy ticket / CSV) and assign owners. File the report in the evidence folder; the history file updates itself |
 | **Monthly, next run** | Same | "Progress since last report" shows what closed, what regressed and what is new. Chase open tickets |
 | **Quarterly** | IT steering committee | Review the Executive Summary, the Roadmap and the Governance table; approve phases, owners, licences and budget; record decisions in minutes. Sign the review line |
 | **At least annually, and after any incident** | Board (or its risk / audit committee) | Receive the Executive Summary (narrative, tiles, trend charts, progress). Sign the "noted by the board" line |
-| **Before and during an exam or audit** | Auditor / examiner | Section 2 as the control test, section 5 for the framework mapping, the history for the trend, sections 6 to 18 as evidence. The sign-off block shows governance |
+| **Before and during an exam or audit** | Auditor / examiner | Section 3 as the control test, section 5 for the framework mapping, the history for the trend, sections 6 to 18 as evidence. The sign-off block shows governance |
 
 Keep every monthly report. Together with the history file they are the evidence that controls are
 measured the same way each month, that gaps are planned and worked, and that the board is informed:
@@ -50,7 +50,7 @@ Who it is for:
 - **Security officers and IT providers / MSPs:** every finding has step-by-step instructions, a
   prerequisite, a "done when" test and a Copy ticket button; the indications-of-compromise section
   tells them what to look at today.
-- **Auditors:** section 2 is the control test, section 5 maps every control to NIST, CIS and FFIEC /
+- **Auditors:** section 3 is the control test, section 5 maps every control to NIST, CIS and FFIEC /
   NCUA so recommendations can cite the standard, and the evidence sections back every status.
 - **Examiners:** the monthly history, the progress section and the sign-off block demonstrate that
   the institution measures, reviews, plans and improves, with evidence pulled live from the tenant,
@@ -296,10 +296,10 @@ without that person needing to understand PowerShell or Microsoft Graph.
 | # | Section | Source | What it answers |
 |---|---------|--------|-----------------|
 | 1 | Executive Summary | organization, subscribedSkus, security/secureScores, history file, computed | Narrative paragraph and KPI tiles (Secure Score vs target, controls met, Critical/High and Medium findings, users without MFA, stale users, Global Administrators, devices, devices not in Intune, stale devices), top five priorities, **Progress since last report** (change log of controls, findings and counts versus the previous run, Secure Score trend chart with target line, open findings by priority chart), privacy statement, tenant details with bulleted licensed capabilities, directory synchronization status (Entra Connect, AD domains, sync server), verified domains table, subscriptions |
-| 2 | Security Controls Summary | computed from everything below | One row per control (MFA, legacy auth, device access, Intune, TAP, device join, forwarding, consent, **email authentication**, **email protection**, **endpoint protection**, Secure Score, privileged roles): Status, Evidence, link to detail. Only **enabled** CA policies count as enforced |
-| 3 | Review These Now: Possible Indications of Compromise | auditLogs/directoryAudits (targeted activities), auditLogs/signIns (P1), identityProtection (P2), applications, Exchange inbox rules, mailbox and recipient permissions, transport rules | What an attacker leaves behind: domain/federation changes, inbox rules that hide, delete or forward mail, risky users, legacy sign-ins, password sprays, MFA denials, Conditional Access blocks, sign-ins from several countries, new role assignments, MFA method changes, admin password resets, policy changes, new app credentials and apps, new accounts and guests, Full Access and Send As grants, transport rule changes, mailbox auditing. Rolled up as *urgent* (investigate today) and *to review* (match to a ticket) |
+| 2 | Review These Now: Possible Indications of Compromise | auditLogs/directoryAudits (targeted activities), auditLogs/signIns (P1), identityProtection (P2), applications and servicePrincipals, Exchange mailboxes, inbox rules, permissions and transport rules, Search-UnifiedAuditLog (sharing, downloads, mailbox changes), Get-SafeLinksDetailReport | A plain-language **situation table** (Urgent / Review / Clear / Not checked) covering: mail forwarded outside the organization, inbox rules that hide or delete mail, known-abused OAuth apps (PerfectData Software, eM Client, rclone, Supermailer and others) and unverified apps with mail or file access, new apps and credentials, Anyone links and external sharing, unusual download or sync volume, mailbox rule and permission changes in the audit log, malicious link clicks, domain/federation changes, users at risk, legacy sign-ins, password sprays, multi-country sign-ins, MFA denials, role and MFA changes, new accounts and delegates, mailbox auditing. Detail tables behind every row |
+| 3 | Security Controls Summary | computed from everything below | One row per control (MFA, legacy auth, device access, Intune, TAP, device join, forwarding, consent, **email authentication**, **email protection**, **endpoint protection**, Secure Score, privileged roles): Status, Evidence, link to detail. Only **enabled** CA policies count as enforced |
 | 4 | Remediation Plan | summary results, secureScoreControlProfiles, directoryRoles, subscribedSkus, built-in playbooks | **Roadmap** by phase (this week, 30 days, 90 days, 12 months) then every failed control with a recommended action, **step-by-step instructions, owner, effort, prerequisite and a done-when test**, privileged-access findings (Global Admins without MFA, too many or a single Global Admin), licensing gaps, and every unimplemented Secure Score action with points available. Sorted Critical, High, Medium, Low, then by points. Each finding carries a stable reference (`AH-xxxxxx`), a **Copy ticket** button, priority filters and a **CSV download**; the same CSV is written next to the report |
-| 5 | Framework Alignment | computed from section 2 plus a built-in mapping table | Every measured control with its status and the expectation it answers in NIST CSF 2.0 / SP 800-63B, the CIS Microsoft 365 Foundations Benchmark (v4.0 numbering), CIS Controls v8 and FFIEC / NCUA (IT Handbook, 2021 Authentication Guidance, CAT / ACET domain codes); filters Met / Gap / Not measured; a plain statement of what the report does not test |
+| 5 | Framework Alignment | computed from section 3 plus a built-in mapping table | Every measured control with its status and the expectation it answers in NIST CSF 2.0 / SP 800-63B, the CIS Microsoft 365 Foundations Benchmark (v4.0 numbering), CIS Controls v8 and FFIEC / NCUA (IT Handbook, 2021 Authentication Guidance, CAT / ACET domain codes); filters Met / Gap / Not measured; a plain statement of what the report does not test |
 | 6 | MDM Compliance Policies | deviceCompliancePolicies | Intune compliance policies per platform: Basics / Settings / Actions for noncompliance / Assignments |
 | 7 | Intune Policies | deviceConfigurations, configurationPolicies (settings catalog), intents (endpoint security), enrollment configs, app protection | Every Intune policy and the settings behind it |
 | 8 | Managed Devices | managedDevices, devices (+registeredOwners) | Device counts, then one device list joining every Entra ID device with its Intune record: owner, **last user** seen by Intune, last activity, compliance, encryption. Quick filters: Stale (90 days), Not in Intune, Noncompliant, Not encrypted, Personal, Windows, Disabled, plus text search |
@@ -328,7 +328,7 @@ without that person needing to understand PowerShell or Microsoft Graph.
 10. Is Temporary Access Pass implemented
 11. Is automatic email forwarding outside the tenant allowed or in use
 12. Privileged users by role
-13. Is there any sign the tenant or a mailbox has been compromised (section 3)
+13. Is there any sign the tenant or a mailbox has been compromised (section 2)
 14. Who outside the institution can reach staff or content through Teams, and which teams have guests
 15. How far can documents be shared from SharePoint and OneDrive, and who has been sharing externally
 
@@ -351,6 +351,7 @@ for the approver. The report never guesses.
 | `-OutputFolder` | `.\M365-Audit-Evidence` | Where the report is written |
 | `-AuditDays` | `30` | Directory audit log window; also the window for the Indications of Compromise section (sign-in analysis uses at most 30 days) |
 | `-NoOpen` | off | Do not open the finished report in the default browser |
+| `-SkipAuditLog` | off | Skip the unified audit log search (sharing events, download volumes, mailbox rule and permission changes) that feeds section 2; faster on very large tenants |
 | (none) | | **Version** is printed in the console banner, the report navigation and footer (`2026.10.31` style: year.month.day of the last change). The report links to this GitHub repository for source and updates |
 | `-NoHistory` | off | Do not read or write the per-tenant `<Client> - history.json` file; the progress section then shows only the current run |
 | `-TargetScorePercent` | `80` | Target Microsoft Secure Score as a percentage of the maximum achievable score; drives the target, gap and the "Below target" status |
@@ -428,7 +429,7 @@ writes the compliance policies to a Word document.
 
 **How do I audit Conditional Access policies?**
 Section 9 shows every policy with its state, users, applications, conditions, grant and session
-controls, IDs resolved to names. Section 2 tells you whether MFA, legacy-authentication blocking and
+controls, IDs resolved to names. Section 3 tells you whether MFA, legacy-authentication blocking and
 device-based access are actually enforced for all users by an enabled policy, not just configured.
 
 **How do I find users without MFA in Microsoft 365?**
@@ -457,11 +458,16 @@ compared with similar organizations. The report shows current, maximum, comparis
 target (`-TargetScorePercent`, default 80%). Every open action with points appears in section 4.
 
 **How can I tell whether our Microsoft 365 tenant has been compromised?**
-Section 3, placed before the plan on purpose, collects the traces attackers leave: inbox rules that hide or forward mail, federation
+Section 2, placed right after the Executive Summary on purpose, is a situation table of the traces attackers leave: inbox rules that hide or forward mail, federation
 changes, new administrators, MFA methods added, admin password resets, new app secrets, successful
 legacy sign-ins, password sprays, sign-ins from unexpected countries, and users Entra ID Protection
-flags as at risk. Items marked urgent should be checked the same day; the rest should match a
-ticket. It is a strong early-warning list, not a replacement for Microsoft Defender or a SIEM.
+flags as at risk, plus what the unified audit log shows about Anyone links, external sharing,
+download and sync volume per user and who changed mailbox rules from where. It also checks for the
+OAuth applications attackers habitually consent to (PerfectData Software, eM Client, rclone,
+Newsletter Software Supermailer, CloudSponge, SigParser and others, matched by application ID) and
+for unverified publishers holding mail or file permissions. Items marked urgent should be checked
+the same day; the rest should match a ticket. It is a strong early-warning list, not a replacement
+for Microsoft Defender or a SIEM.
 
 **How do I audit Teams and SharePoint external sharing?**
 Section 17 lists every team with guests, public visibility, owners and activity, plus the tenant's
@@ -607,7 +613,7 @@ automatically.
    (`Enabled`, `Partial`, `Not enforced`, `Blocked`, `Not licensed`, ...) and an evidence sentence.
    The status regexes near the Security Controls Summary builder colour it green, amber or red.
 3. **Add a summary row.** `Add-SummaryRow '<Control name>' $status $evidence '<Section title>'`.
-   This single call puts the control in section 2, in the controls-met KPI, in the per-run history
+   This single call puts the control in section 3, in the controls-met KPI, in the per-run history
    and therefore in the "Progress since last report" change log.
 4. **Explain it.** Add an entry to `$IssueCatalog` with `Title`, `Why` (written for a bank or credit
    union board) and `Fix`, then map it in `$SummaryIssueMap` (summary row) or pass its key in the
