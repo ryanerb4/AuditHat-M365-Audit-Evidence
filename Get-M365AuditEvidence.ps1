@@ -748,6 +748,25 @@ $IssueCatalog = @{
     'ga-count'             = @{ Title = 'Global Administrator count outside the recommended two to four'; Why = 'One administrator is a single point of failure; more than four widens the blast radius of a phished account.'; Fix = 'Keep two to four Global Administrators including a break-glass account; give everyone else a least-privilege role.' }
     'guest'                = @{ Title = 'Guest account';                                     Why = 'Guests are external people with access to shared content; stale or unreviewed guests are a common data-leak path.'; Fix = 'Review guests periodically, remove those no longer needed, and consider access reviews or restricting guest invitations.' }
 }
+# One rule for every status word in the report: good (pass), warn (action needed), mid (partial / review), na (not measured), info (neutral count)
+function Get-StatusKind { param($Status)
+    $v = [string]$Status
+    if ($v -match '^(Enabled|Enforced|Blocked|Yes|All enrolled|Restricted|Target met|Complete|Configured|Onboarded|None found|Clear|On track|Done|Pass|True|Compliant|Required|Improved|Resolved|Low|On$|Active|Succeeded|success|Verified|\d+ polic)') { return 'good' }
+    if ($v -match '^(Not available|Not collected|Not measured|Not checked|Not scanned|Not applicable|Unknown|n/a|Baseline|Skipped)') { return 'na' }
+    if ($v -match '^(Disabled|Not enforced|Not blocked|No$|Not deployed|None$|None \(|Not started|Active external|Allowed by policy|Below target|Missing|Licensed, not configured|Attention needed|\d+ urgent|Anyone links|Off track|Urgent|False|Off$|Regressed|New$|High|Critical|Not configured|Not published|Not licensed|Slipping|Failed|Inactive|Impaired|Noncompliant|Not registered|enabledForReportingButNotEnforced)') { return 'warn' }
+    if ($v -match '^(Partial|Allowed|All users allowed|No Windows|EOP only|No email domains|No devices onboarded|Guests present|In progress|\d+ to review|Review|Changed|Medium|Holding|Soft fail|Neutral|One selector|none \(monitor|quarantine|reportOnly|Pass all)') { return 'mid' }
+    if ($v -match '^(\d+ assignments|\d+ \/ \d+|Info)') { return 'info' }
+    return 'info'
+}
+function Get-ResultWord { param($Status) switch (Get-StatusKind $Status) { 'good' { 'Pass' } 'warn' { 'Action needed' } 'mid' { 'Partial: review' } 'na' { 'Not measured' } default { 'Info' } } }
+function New-StatusBadge {
+    # Icon + coloured text, identical everywhere: Pass, Partial, Action needed, Not measured.
+    param($Status, [switch]$WordOnly)
+    $kind = Get-StatusKind $Status
+    $icon = switch ($kind) { 'good' { '&#10004;' } 'warn' { '&#10006;' } 'mid' { '&#9684;' } 'na' { '&mdash;' } default { '&bull;' } }
+    $text = if ($WordOnly) { Get-ResultWord $Status } else { [string]$Status }
+    return "<span class='st $kind' title='$(Get-ResultWord $Status)'>$icon</span><span class='stt $kind'>$(HtmlEnc $text)</span>"
+}
 function New-InfoIcon {
     param([string]$Issue, [string]$Detail)
     $i = $IssueCatalog[$Issue]
@@ -799,6 +818,7 @@ function New-HtmlTable {
             if ($rowLinks -and $rowLinks[$c]) { $cell = "<a href='$(HtmlEnc $rowLinks[$c])'>$cell</a>" }
             if ($rowHtml -and $rowHtml.Contains($c)) { $cell = [string]$rowHtml[$c] }   # pre-built, already encoded HTML
             $cls = ''
+            if ($c -in @('Status', 'Result', 'Level', 'Rollout stage') -and ([string]$v) -ne '' -and -not ($rowHtml -and $rowHtml.Contains($c))) { $cell = New-StatusBadge $v }
             switch -Regex ([string]$v) {
                 '^(True|Enabled|enabled|Compliant|Required|Yes|Block|block|On|Improved|Resolved|Clear|Low|On track|Done)$' { $cls = " class='good'" }
                 '^(False|Disabled|disabled|No|Not registered|Off|enabledForReportingButNotEnforced|Regressed|New|Urgent|High|Critical|Off track)$' { $cls = " class='warn'" }
@@ -3130,6 +3150,9 @@ table.grid thead th{background:var(--blue);color:#fff;position:sticky;top:0}
 table.kv th{width:280px;background:#f3f6f9;font-weight:bold}
 tbody tr:nth-child(even) td{background:#fafafa}
 td.good{color:var(--good);font-weight:bold}td.warn{color:var(--warn);font-weight:bold}td.mid{color:#B8860B;font-weight:bold}
+.st{display:inline-block;width:18px;height:18px;line-height:18px;text-align:center;border-radius:50%;color:#fff;font-size:10pt;font-weight:bold;margin-right:5px;vertical-align:middle}.st.good{background:var(--good)}.st.warn{background:var(--warn)}.st.mid{background:#B8860B}.st.na{background:#9a9a9a}.st.info{background:#7a8aa0}
+.stt{font-weight:bold;vertical-align:middle}.stt.good{color:var(--good)}.stt.warn{color:var(--warn)}.stt.mid{color:#8a6508}.stt.na{color:#666;font-weight:normal}.stt.info{font-weight:normal}
+.legend{font-size:9.5pt;color:#555;margin:6px 0 10px}
 .count{font-size:10pt;color:#555;font-weight:normal}
 .empty{color:#555;font-style:italic}.note{background:#fff8e1;border:1px solid #f0d47a;padding:10px 12px;border-radius:4px;font-size:10pt}
 .meta{font-size:9.5pt;color:#555;margin-bottom:18px}
@@ -3569,14 +3592,10 @@ $ticketBar = if ($remIdx) {
     "<div id='tkModal' class='modal' hidden><div class='modal-box' role='dialog' aria-modal='true' aria-labelledby='tkTitle'><div class='modal-head'><b id='tkTitle'>Ticket</b><button type='button' id='tkClose'>Close</button></div><pre id='tkText'></pre><div class='modal-actions'><button type='button' id='tkCopy'>Copy ticket</button><span class='hint'>Paste into your ticketing system or an email to your IT provider or MSP. Esc closes.</span></div></div></div>"
 } else { '' }
 $summaryTable = New-Object System.Text.StringBuilder
-[void]$summaryTable.Append("<table class='grid'><thead><tr><th style='width:26%'>Control</th><th style='width:14%'>Status</th><th>Evidence</th><th style='width:12%'>Detail</th></tr></thead><tbody>")
+[void]$summaryTable.Append("<table class='grid' id='tbl-controls'><thead><tr><th style='width:24%'>Control</th><th style='width:11%'>Result</th><th style='width:15%'>Status</th><th>Evidence</th><th style='width:11%'>Detail</th></tr></thead><tbody>")
 foreach ($row in $script:summaryRows) {
-    $cls = switch -Regex ([string]$row.Status) {
-        '^(Enabled|Enforced|Blocked|Yes|All enrolled|Restricted|Target met|Complete|Configured|Onboarded|None found)' { 'good'; break }
-        '^(Partial|Allowed|All users allowed|Not available|Not collected|No Windows|EOP only|No email domains|No devices onboarded|Not licensed|Guests present|In progress|\d+ to review)' { 'mid'; break }
-        '^(Disabled|Not enforced|Not blocked|No$|Not deployed|None|Not started|Active external|Allowed by policy|Below target|Missing|Licensed, not configured|Attention needed|\d+ urgent|Anyone links)' { 'warn'; break }
-        default { '' }
-    }
+    $cls = Get-StatusKind $row.Status
+    if ($cls -eq 'info') { $cls = '' }
     $anchor = $SectionAnchors[$row.Section]
     $sumIcon = ''
     if ($SummaryIssueMap.ContainsKey($row.Control)) {
@@ -3595,7 +3614,7 @@ foreach ($row in $script:summaryRows) {
             $sumIcon = New-InfoIcon $iid
         }
     }
-    [void]$summaryTable.Append("<tr><td><b>$(HtmlEnc $row.Control)</b></td><td class='$cls'>$(HtmlEnc $row.Status)$sumIcon</td><td>$(HtmlEnc $row.Evidence)</td><td><a href='#$anchor'>$(HtmlEnc $row.Section)</a></td></tr>")
+    [void]$summaryTable.Append("<tr data-tags='$(Get-StatusKind $row.Status)'><td><b>$(HtmlEnc $row.Control)</b></td><td>$(New-StatusBadge $row.Status -WordOnly)</td><td class='$cls'>$(HtmlEnc $row.Status)$sumIcon</td><td>$(HtmlEnc $row.Evidence)</td><td><a href='#$anchor'>$(HtmlEnc $row.Section)</a></td></tr>")
 }
 [void]$summaryTable.Append('</tbody></table>')
 # Audit Hat logo: embedded as a data URI when AuditHat-Logo.png sits next to the script, so the report stays one file.
@@ -3898,6 +3917,7 @@ $glbaRows = @(
     [ordered]@{ 'Board report element (GLBA Interagency Guidelines)' = 'Recommendations for changes'; 'Where it is in this report' = 'Section 4 remediation plan; rocks and issues on this page' }
 )
 
+$legendHtml = "<p class='legend'><span class='st good'>&#10004;</span> Pass &nbsp; <span class='st mid'>&#9684;</span> Partial: review &nbsp; <span class='st warn'>&#10006;</span> Action needed &nbsp; <span class='st na'>&mdash;</span> Not measured (licence, permission or switch) &nbsp; <span class='i'>i</span> click for why it matters and what to do</p>"
 # ---- Framework alignment table and governance figures for the executive summary
 $frameworkRows = @(); $fwMet = 0; $fwRated = 0
 foreach ($row in $script:summaryRows) {
@@ -3907,13 +3927,15 @@ foreach ($row in $script:summaryRows) {
     $rated = $st -notmatch '^(Not available|Not collected)'
     $met = $st -match '^(Enabled|Enforced|Blocked|Yes|All enrolled|Restricted|Target met|Complete|Configured|Onboarded|None found)'
     if ($rated) { $fwRated++ }; if ($met) { $fwMet++ }
-    $frameworkRows += [ordered]@{ 'Control' = $row.Control; 'Status' = $st; 'NIST CSF 2.0 / SP 800-63B' = $fw.Nist; 'CIS Microsoft 365 Foundations Benchmark' = $fw.Cis365; 'CIS Controls v8' = $fw.CisV8; 'FFIEC / NCUA' = $fw.Ffiec; '_tags' = $(if ($met) { 'met' } elseif ($rated) { 'gap' } else { 'na' }); '_issues' = $(if (-not $met -and $rated -and $SummaryIssueMap.ContainsKey($row.Control)) { @{ 'Status' = $SummaryIssueMap[$row.Control] } } else { $null }) }
+    $frameworkRows += [ordered]@{ 'Control' = $row.Control; 'Result' = (Get-ResultWord $st); 'Status' = $st; 'NIST CSF 2.0 / SP 800-63B' = $fw.Nist; 'CIS Microsoft 365 Foundations Benchmark' = $fw.Cis365; 'CIS Controls v8' = $fw.CisV8; 'FFIEC / NCUA' = $fw.Ffiec; '_tags' = $(if ($met) { 'met' } elseif ($rated) { 'gap' } else { 'na' }) + ' ' + (Get-StatusKind $st); '_issues' = $(if (-not $met -and $rated -and $SummaryIssueMap.ContainsKey($row.Control)) { @{ 'Status' = $SummaryIssueMap[$row.Control] } } else { $null }) }
 }
-$FrameworkFilters = @(@{ Label = 'Met'; Tag = 'met' }, @{ Label = 'Gap'; Tag = 'gap' }, @{ Label = 'Not measured'; Tag = 'na' })
+$FrameworkFilters = @(@{ Label = 'Action needed'; Tag = 'warn' }, @{ Label = 'Partial'; Tag = 'mid' }, @{ Label = 'Pass'; Tag = 'good' }, @{ Label = 'Not measured'; Tag = 'na' })
 $frameworkSectionHtml = @"
 <section id='frameworks'><h2>5. Framework Alignment (NIST, CIS, FFIEC / NCUA)</h2>
 <p class='meta'>Each control this report measures, with the expectation it answers in the frameworks examiners and auditors use: <b>NIST Cybersecurity Framework 2.0</b> subcategories and <b>NIST SP 800-63B</b> authenticator assurance levels; the <b>CIS Microsoft 365 Foundations Benchmark</b> (section numbering follows v4.0; check the edition your auditor uses) and <b>CIS Critical Security Controls v8</b> safeguards; and <b>FFIEC</b> references: the IT Examination Handbook Information Security booklet, the 2021 <i>Authentication and Access to Financial Institution Services and Systems</i> guidance, and the Cybersecurity Assessment Tool / NCUA ACET domain codes (D3.PC.Am = Domain 3, Preventative Controls, Access and Data Management) that many institutions still use for the inherent risk and maturity assessment. The mapping is informational and does not replace the auditor's own judgement. <b>$fwMet of $fwRated</b> mapped controls are met.</p>
-$(New-HtmlTable $frameworkRows -Id 'tbl-frameworks' -Filters $FrameworkFilters -Columns 'Control','Status','NIST CSF 2.0 / SP 800-63B','CIS Microsoft 365 Foundations Benchmark','CIS Controls v8','FFIEC / NCUA' -EmptyText 'No controls were measured.')
+$legendHtml
+$(New-HtmlTable $frameworkRows -Id 'tbl-frameworks' -Filters $FrameworkFilters -Columns 'Control','Result','Status','NIST CSF 2.0 / SP 800-63B','CIS Microsoft 365 Foundations Benchmark','CIS Controls v8','FFIEC / NCUA' -EmptyText 'No controls were measured.')
+<p class='meta'>Pass means the control is in place as measured; Partial: review means it is partly in place or needs a judgement; Action needed means it is missing and appears in the Remediation Plan; Not measured means the licence, permission or switch did not allow the check.</p>
 <h3>What this report does not test</h3>
 <p class='meta'>So that nobody mistakes this report for a complete assessment: it does not test backup and recovery of Microsoft 365 data, the incident response plan, security awareness training, vendor and core-provider management, data classification and retention policies in Purview, physical security, network perimeter controls, or on-premises Active Directory (see the companion AuditHat AD Governance Report). Those remain part of the institution's wider information security program and the GLBA Safeguards Rule risk assessment.</p>
 </section>
@@ -3986,7 +4008,7 @@ $progressHtml
 </details>
 $(if ($repeatRows.Count) { "<details class='more' open><summary>Repeat findings: open for three or more reports</summary><p class='meta'>Examiners treat a finding that stays open across review cycles as a program weakness, not just a technical gap. Each needs an owner, a date and a reason in the minutes.</p>" + (New-HtmlTable $repeatRows -Columns 'Finding','Priority','Open in reports','First seen','Owner' -EmptyText '') + '</details>' })
 <details class='more'><summary>More figures: users, devices, MFA</summary><div class='kpis'>$($kpiMoreHtml.ToString())</div></details>
-<p class='legend'><span class='i'>i</span> marks a configuration issue anywhere in this report. Click the icon to read why it matters and what to do about it.</p>
+$legendHtml
 <hr class='divider'>
 <h3>For the IT committee, auditors and examiners</h3>
 <details class='more' open><summary>The plan by phase</summary>
@@ -4021,6 +4043,8 @@ $(New-HtmlTable $skuRows -Columns 'License SKU','Enabled','Consumed','Status')
 $iocSectionHtml
 <section id='summary'><h2>3. Security Controls Summary</h2>
 <p class='meta'>Each status is computed from the tenant configuration collected below. Status reflects what is enforced today, not what is configured in report-only or disabled policies.</p>
+$legendHtml
+<div class='filters' data-table='tbl-controls'><button class='on' data-tag='all'>All ($(@($script:summaryRows).Count))</button><button data-tag='warn'>Action needed ($(@($script:summaryRows | Where-Object { (Get-StatusKind $_.Status) -eq 'warn' }).Count))</button><button data-tag='mid'>Partial ($(@($script:summaryRows | Where-Object { (Get-StatusKind $_.Status) -eq 'mid' }).Count))</button><button data-tag='good'>Pass ($(@($script:summaryRows | Where-Object { (Get-StatusKind $_.Status) -eq 'good' }).Count))</button><button data-tag='na'>Not measured ($(@($script:summaryRows | Where-Object { (Get-StatusKind $_.Status) -eq 'na' }).Count))</button><input type='search' placeholder='Search controls...' aria-label='Search'><span class='n'></span></div>
 $($summaryTable.ToString())
 </section>
 

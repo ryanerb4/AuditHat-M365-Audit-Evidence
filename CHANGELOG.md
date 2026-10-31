@@ -31,6 +31,10 @@ First public release.
   anti-phishing, Safe Links, Safe Attachments, Defender for Endpoint devices and scores.
 - Directory synchronization status (Entra Connect, on-premises AD domains, sync server) and a link to
   the companion AuditHat AD Governance Report.
+- Consistent pass / fail indicators: one classifier decides whether a status is Pass, Partial: review,
+  Action needed or Not measured; every Status, Result and Level cell shows an icon badge in the same
+  colours; the Security Controls Summary and Framework Alignment tables gain a Result column, filters by
+  result and a legend, and the first page carries the same legend.
 - First page: rocks list their open items as links to the plan; issues, repeat findings and top
   priorities link to their plan row and carry a View ticket button.
 - The signature block was removed from the Executive Summary; governance is recorded in the committee and board minutes.
