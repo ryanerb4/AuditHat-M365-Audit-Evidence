@@ -62,6 +62,9 @@ map that future work is built from.
 - **Framework references:** CIS M365 Benchmark numbering follows v4.0 at family level (for example
   5.2.2) unless the item is stable across editions; FFIEC CAT / ACET codes are at domain.component
   level (D3.PC.Am). Keep the disclaimer in section 5 when editing.
+- **Never wrap a `List[object]` of custom objects in `@()`.** `@($list)` throws "Argument types do not
+  match" in both engines when the list holds `[pscustomobject]` items; use `$list.ToArray()`.
+  Piping the list (`$list | Where-Object ...`) is fine.
 - **Numbers in section titles** appear in three places: `$sections`, the `<h2>` of each section
   template, and the README table. Renumber all three.
 
