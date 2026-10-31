@@ -3496,7 +3496,6 @@ function New-SvgGroupedBars {
 }
 $scoreTrend = New-SvgTrendChart -Title 'Microsoft Secure Score (% of maximum) by report' -Points @($history | ForEach-Object { @{ Label = ([string](Get-JsonProp $_ 'Date')).Substring(0, 10); Value = (Get-JsonProp $_ 'SecureScorePct') } }) -Max 100 -Target $TargetScorePercent -Unit '%'
 $findingTrend = New-SvgGroupedBars -Title 'Open findings by priority, by report' -Runs @($history | ForEach-Object { $fd = Get-JsonProp $_ 'Findings'; @{ Label = ([string](Get-JsonProp $_ 'Date')).Substring(0, 10); Values = @(([int](Get-JsonProp $fd 'Critical') + [int](Get-JsonProp $fd 'High')), [int](Get-JsonProp $fd 'Medium'), [int](Get-JsonProp $fd 'Low')) } }) -Series @('Critical + High', 'Medium', 'Low') -Colors @('#b00020', '#B8860B', '#005D9C')
-$passkeyTrend = New-SvgTrendChart -Title 'Users with phishing-resistant MFA (passkeys), % of enabled users' -Points @($history | ForEach-Object { @{ Label = ([string](Get-JsonProp $_ 'Date')).Substring(0, 10); Value = (Get-JsonProp (Get-JsonProp $_ 'Users') 'PasskeyPct') } }) -Target 90 -Color '#1e7b34'
 $progressHtml = if ($previous) {
     "<p class='meta'>Compared with the previous report of $(HtmlEnc (Get-JsonProp $previous 'Date')) (script $(HtmlEnc (Get-JsonProp $previous 'Version'))): <b>$improvedCount improvement(s)</b>, $regressedCount regression(s), $resolvedCount finding(s) resolved, $newCount new finding(s). $($history.Count) reports in the history.</p>" +
     $(if ($changeRows.Count) { New-HtmlTable $changeRows -Columns 'Area','Change','Before','After','Direction' } else { "<p class='empty'>No measured control, finding or headline count changed since the previous report.</p>" })
@@ -3977,7 +3976,7 @@ $(New-HtmlTable $rockRows -Columns 'Rock (90-day objective)','Outcome','Owner','
 $(New-HtmlTable $issueRows -Columns 'Issue','Type','What the committee is asked to decide','Who','Phase' -EmptyText 'No open issues for the committee; the remaining work is for the IT provider.')
 <h3 id='progress'>Progress</h3>
 <p class='meta'>$(HtmlEnc $trend.Text)</p>
-<div class='charts'><div class='chart'>$scoreTrend</div><div class='chart'>$findingTrend</div><div class='chart'>$passkeyTrend</div></div>
+<div class='charts'><div class='chart'>$scoreTrend</div><div class='chart'>$findingTrend</div></div>
 <details class='more'><summary>Show every change since the last report</summary>
 $progressHtml
 </details>
@@ -4217,7 +4216,7 @@ $shareSectionHtml
   var sections=Array.prototype.slice.call(document.querySelectorAll('main > section'));
   var navLinks=Array.prototype.slice.call(document.querySelectorAll('nav a[href^="#"]'));
   var viewToggle=document.getElementById('viewToggle'), prevBtn=document.getElementById('prevSec'), nextBtn=document.getElementById('nextSec'), pagerTitle=document.getElementById('pagerTitle'), pagerPos=document.getElementById('pagerPos');
-  var paged=true; try{ paged = (localStorage.getItem('audithat-view')!=='all'); }catch(e){}
+  var paged=true; try{ paged = (sessionStorage.getItem('audithat-view')!=='all'); }catch(e){}
   function sectionFor(id){ var el=document.getElementById(id); if(!el) return null; var sec=el; while(sec&&sec!==mainEl&&!(sec.tagName==='SECTION'&&sec.parentNode===mainEl)){ sec=sec.parentNode; } return (sec&&sec!==mainEl)?sec:null; }
   function showSection(sec, targetId){
     if(!sec) return;
@@ -4243,7 +4242,7 @@ $shareSectionHtml
     e.preventDefault(); try{ history.replaceState(null,'','#'+id); }catch(err){} showSection(sec,id);
   });
   window.addEventListener('hashchange', function(){ if(!paged) return; var id=location.hash.substring(1); var sec=sectionFor(id); if(sec) showSection(sec,id); });
-  if(viewToggle) viewToggle.addEventListener('click', function(){ paged=!paged; try{ localStorage.setItem('audithat-view', paged?'paged':'all'); }catch(e){} applyMode(); });
+  if(viewToggle) viewToggle.addEventListener('click', function(){ paged=!paged; try{ sessionStorage.setItem('audithat-view', paged?'paged':'all'); }catch(e){} applyMode(); });
   if(prevBtn) prevBtn.addEventListener('click', function(){ var i=sections.findIndex(function(s){ return s.classList.contains('active'); }); if(i>0){ try{ history.replaceState(null,'','#'+sections[i-1].id); }catch(err){} showSection(sections[i-1]); } });
   if(nextBtn) nextBtn.addEventListener('click', function(){ var i=sections.findIndex(function(s){ return s.classList.contains('active'); }); if(i<sections.length-1){ try{ history.replaceState(null,'','#'+sections[i+1].id); }catch(err){} showSection(sections[i+1]); } });
   window.addEventListener('beforeprint', function(){ document.body.classList.remove('paged'); });

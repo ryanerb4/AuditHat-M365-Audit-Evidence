@@ -76,7 +76,7 @@ and Next buttons and a "Section n of 19" marker in a toolbar that stays at the t
 stays pinned under it while you scroll. Every link inside the report (a finding
 in the roadmap, "Progress since last report", a situation-table detail) opens the right page and
 scrolls to the item. **Show all sections** switches to the whole report on one long page for
-scrolling or searching with Ctrl+F, and the choice is remembered in the browser. Printing always
+scrolling or searching with Ctrl+F; every report opens in the paged view. Printing always
 prints the whole report, with the step-by-step lists expanded.
 
 ## What the report looks like
