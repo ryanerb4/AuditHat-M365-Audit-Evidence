@@ -1638,7 +1638,10 @@ $PriorityRank = @{ 'Critical' = 1; 'High' = 2; 'Medium' = 3; 'Low' = 4 }
 $script:remediationItems = New-Object System.Collections.Generic.List[object]
 function Add-Remediation {
     param([string]$Priority, [string]$Finding, [string]$State, [string]$Action, $Points, [string]$Impact, [string]$Section, [string]$Url)
-    $script:remediationItems.Add([pscustomobject]@{ Priority = $Priority; Rank = $PriorityRank[$Priority]; Finding = $Finding; State = $State; Action = $Action; Points = $Points; Impact = $Impact; Section = $Section; Url = $Url })
+    # Stable reference: same finding name -> same AH-xxxxxx in every report, so tickets can be tracked to closure
+    $sha = [System.Security.Cryptography.SHA256]::Create(); $hash = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Finding.Trim().ToLowerInvariant())); $sha.Dispose()
+    $ref = 'AH-' + (($hash[0..2] | ForEach-Object { $_.ToString('X2') }) -join '')
+    $script:remediationItems.Add([pscustomobject]@{ Ref = $ref; Priority = $Priority; Rank = $PriorityRank[$Priority]; Finding = $Finding; State = $State; Action = $Action; Points = $Points; Impact = $Impact; Section = $Section; Url = $Url })
 }
 # Control -> (status pattern that counts as a finding, priority, recommended action)
 $remediationGuides = @(
@@ -1723,6 +1726,11 @@ ul.kvlist{margin:0;padding-left:18px}ul.kvlist li{margin:2px 0}
 .filters button{font:inherit;font-size:9.5pt;border:1px solid var(--blue);background:#fff;color:var(--blue);border-radius:14px;padding:3px 11px;cursor:pointer}
 .filters button.on{background:var(--blue);color:#fff}.filters input{font:inherit;font-size:9.5pt;padding:4px 8px;border:1px solid var(--line);border-radius:4px;min-width:220px;margin-left:auto}
 .filters .n{font-size:9pt;color:#555}
+.ticketbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:6px 0 10px}
+.ticketbar button,button.tk{font:inherit;font-size:9.5pt;border:1px solid var(--blue);background:var(--blue);color:#fff;border-radius:4px;padding:4px 10px;cursor:pointer}
+button.tk{font-size:8.5pt;padding:2px 7px;background:#fff;color:var(--blue);white-space:nowrap}
+.ticketbar button:disabled,button.tk:disabled{opacity:.7;cursor:default}.ticketbar .hint{font-size:9pt;color:#555;flex:1 1 320px}
+td.ref{font-family:Consolas,monospace;font-size:9pt;white-space:nowrap}
 .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin:14px 0 22px}
 .kpi{border:1px solid var(--line);border-left:5px solid var(--blue);border-radius:6px;padding:12px 14px;background:#fff;page-break-inside:avoid}
 .kpi .v{font-size:20pt;font-weight:bold;color:var(--blue);line-height:1.1}.kpi .l{font-size:9pt;color:#555;margin-top:4px}
@@ -1737,7 +1745,7 @@ details.info .tip p{margin:6px 0 0}
 .legend{font-size:9.5pt;color:#555;margin:0 0 10px}.legend .i{display:inline-flex;width:15px;height:15px;border-radius:50%;background:var(--warn);color:#fff;font:bold 10px Georgia,serif;align-items:center;justify-content:center;vertical-align:middle}
 .charts{display:flex;gap:18px;flex-wrap:wrap;margin:10px 0 20px}.chart{flex:1 1 460px;min-width:0;border:1px solid var(--line);border-radius:6px;padding:8px 10px;background:#fff}.chart svg{display:block}.chart svg text{font-family:Arial,Helvetica,sans-serif}
 .privacy{background:#eef6ee;border:1px solid #bfe0c2;border-left:5px solid var(--good);padding:10px 14px;border-radius:4px;font-size:10pt;margin:16px 0}
-@media print{nav{display:none}main{margin:0;padding:0}section{page-break-before:always}section:first-of-type{page-break-before:avoid}table.grid thead th{position:static}.filters{display:none}details.info .tip{position:static;display:block;width:auto;box-shadow:none;margin-top:4px}details.info summary{display:none}details.info:not([open]) .tip{display:none}}
+@media print{nav{display:none}.ticketbar,button.tk{display:none}main{margin:0;padding:0}section{page-break-before:always}section:first-of-type{page-break-before:avoid}table.grid thead th{position:static}.filters{display:none}details.info .tip{position:static;display:block;width:auto;box-shadow:none;margin-top:4px}details.info summary{display:none}details.info:not([open]) .tip{display:none}}
 "@
 
 $sections = @(
@@ -2003,16 +2011,35 @@ $progressHtml = if ($previous) {
     $(if ($changeRows.Count) { New-HtmlTable $changeRows -Columns 'Area','Change','Before','After','Direction' } else { "<p class='empty'>No measured control, finding or headline count changed since the previous report.</p>" })
 } else { "<p class='meta'>This is the first report kept for this tenant. From the second run onward this section lists every control, finding and headline count that changed, and the charts show the trend. The history (headline figures only, no names) is stored next to the report in <b>$(HtmlEnc $historyName) - history.json</b>; keep it with the reports.</p>" }
 
-$remHtml = New-Object System.Text.StringBuilder[void]$remHtml.Append("<table class='grid'><thead><tr><th style='width:3%'>#</th><th style='width:7%'>Priority</th><th style='width:17%'>Finding</th><th style='width:20%'>Current state</th><th>Recommended action</th><th style='width:7%'>Secure Score points</th><th style='width:12%'>Impact / effort</th><th style='width:8%'>Detail</th></tr></thead><tbody>")
+$remHtml = New-Object System.Text.StringBuilder
+[void]$remHtml.Append("<table class='grid' id='remTable'><thead><tr><th style='width:3%'>#</th><th style='width:6%'>Ref</th><th style='width:7%'>Priority</th><th style='width:15%'>Finding</th><th style='width:18%'>Current state</th><th>Recommended action</th><th style='width:6%'>Secure Score points</th><th style='width:11%'>Impact / effort</th><th style='width:7%'>Detail</th><th style='width:7%'>Ticket</th></tr></thead><tbody>")
 $remIdx = 0
 foreach ($item in $remediationSorted) {
     $remIdx++
     $cls = switch ($item.Priority) { 'Critical' { 'warn' } 'High' { 'warn' } 'Medium' { 'mid' } default { '' } }
     $detail = if ($item.Url) { "<a href='$(HtmlEnc $item.Url)' target='_blank' rel='noopener'>Open in Defender</a>" } elseif ($SectionAnchors[$item.Section]) { "<a href='#$($SectionAnchors[$item.Section])'>$(HtmlEnc $item.Section)</a>" } else { HtmlEnc $item.Section }
-    [void]$remHtml.Append("<tr><td>$remIdx</td><td class='$cls'>$(HtmlEnc $item.Priority)</td><td><b>$(HtmlEnc $item.Finding)</b></td><td>$(HtmlEnc $item.State)</td><td>$(HtmlEnc $item.Action)</td><td>$(if ($null -ne $item.Points) { HtmlEnc $item.Points })</td><td>$(HtmlEnc $item.Impact)</td><td>$detail</td></tr>")
+    [void]$remHtml.Append("<tr data-tags='$($item.Priority.ToLower())'><td>$remIdx</td><td class='ref'>$(HtmlEnc $item.Ref)</td><td class='$cls'>$(HtmlEnc $item.Priority)</td><td><b>$(HtmlEnc $item.Finding)</b></td><td>$(HtmlEnc $item.State)</td><td>$(HtmlEnc $item.Action)</td><td>$(if ($null -ne $item.Points) { HtmlEnc $item.Points })</td><td>$(HtmlEnc $item.Impact)</td><td>$detail</td><td><button type='button' class='tk' data-i='$($remIdx - 1)' title='Copy this finding as ticket text for your IT provider or MSP'>Copy ticket</button></td></tr>")
 }
 [void]$remHtml.Append('</tbody></table>')
 if ($remIdx -eq 0) { $remHtml = New-Object System.Text.StringBuilder; [void]$remHtml.Append("<p class='empty'>No findings. Every measured control passed and every Secure Score action is implemented.</p>") }
+
+# ---- Tickets: the same findings as plain rows for Copy ticket / Copy all / CSV download (in the report) and a CSV file next to the report
+$safeClient = ($ClientLabel -replace '[^A-Za-z0-9 ._()-]', '').Trim()
+if (-not $safeClient) { $safeClient = 'Client' }
+$ticketCsvName = "$safeClient - Remediation tickets $($ReportDate.ToString('yyyy-MM-dd')).csv"
+$ticketRows = @($remediationSorted | ForEach-Object {
+    [pscustomobject]([ordered]@{
+        'Ref' = $_.Ref; 'Priority' = $_.Priority; 'Finding' = $_.Finding; 'Current state' = $_.State; 'Recommended action' = $_.Action
+        'Why it matters' = $_.Impact; 'Secure Score points' = $(if ($null -ne $_.Points) { [string]$_.Points } else { '' })
+        'Report section' = $_.Section; 'Link' = $(if ($_.Url) { [string]$_.Url } else { '' })
+    })
+})
+$ticketJson = if ($ticketRows.Count) { (ConvertTo-Json -InputObject $ticketRows -Compress -Depth 3) -replace '</', '<\/' } else { '[]' }
+$ticketMeta = ConvertTo-Json -InputObject ([pscustomobject]@{ Client = $ClientLabel; Date = $ReportDate.ToString('yyyy-MM-dd'); Version = $ScriptVersion; File = $ticketCsvName }) -Compress
+$ticketBar = if ($remIdx) {
+    "<div class='filters' data-table='remTable'><button class='on' data-tag='all'>All</button><button data-tag='critical'>Critical</button><button data-tag='high'>High</button><button data-tag='medium'>Medium</button><button data-tag='low'>Low</button><input type='search' placeholder='Search findings'><span class='n'></span></div>" +
+    "<div class='ticketbar'><button type='button' id='tkCsv'>Download tickets (CSV)</button><button type='button' id='tkAll'>Copy all tickets</button><span class='hint'>Each finding has a stable reference (AH-xxxxxx) that stays the same from report to report. Use <b>Copy ticket</b> on a row, <b>Copy all tickets</b>, or the CSV to hand findings to your IT provider or MSP as work items; the next report's <a href='#progress'>Progress since last report</a> shows which were resolved. The same CSV is saved next to this report as <i>$(HtmlEnc $ticketCsvName)</i>.</span></div>"
+} else { '' }
 $summaryTable = New-Object System.Text.StringBuilder
 [void]$summaryTable.Append("<table class='grid'><thead><tr><th style='width:26%'>Control</th><th style='width:14%'>Status</th><th>Evidence</th><th style='width:12%'>Detail</th></tr></thead><tbody>")
 foreach ($row in $script:summaryRows) {
@@ -2115,7 +2142,7 @@ $html = @"
 <div class='kpis'>$($kpiHtml.ToString())</div>
 <h3>Top priorities</h3>
 <div class='exec'>$(if ($remediationSorted.Count) { '<ol>' + ((@($remediationSorted | Select-Object -First 5) | ForEach-Object { "<li><b>$(HtmlEnc $_.Priority):</b> $(HtmlEnc $_.Finding)$(if ($_.Points) { " ($($_.Points) Secure Score points)" })</li>" }) -join '') + '</ol>' } else { "<p class='empty'>No open findings.</p>" }) <p class='meta'>Full list with recommended actions in <a href='#remediation'>section 3, Remediation Plan</a>.</p></div>
-<h3>Progress since last report</h3>
+<h3 id='progress'>Progress since last report</h3>
 $progressHtml
 <div class='charts'><div class='chart'>$scoreTrend</div><div class='chart'>$findingTrend</div></div>
 <div class='privacy'><b>Privacy.</b> This report was generated locally by the free Audit Hat M365 Audit Evidence script ($brandLink) on the computer of the signed-in user. The script reads the tenant with that user's own permissions and writes only to the local output folder. No data is sent to Audit Hat or any third party.</div>
@@ -2134,7 +2161,9 @@ $($summaryTable.ToString())
 
 <section id='remediation'><h2>3. Remediation Plan</h2>
 <p class='meta'>Every control from the summary that is not fully met, plus every Microsoft Secure Score improvement action that still has points available, ranked by priority (Critical, High, Medium, Low); within a priority the measured controls come first, then Secure Score actions by points available. Findings: $(HtmlEnc $remediationCounts). $(if ($null -ne $scoreCurrent) { "Secure Score $scoreCurrent of $scoreMax points; target $scoreTarget points ($TargetScorePercent%); gap $scoreGap points." } else { 'Secure Score not available.' })$(if ($scoreIgnored) { " $scoreIgnored Secure Score action(s) marked ignored, third-party or resolved in Defender are not listed." })</p>
+$ticketBar
 $($remHtml.ToString())
+<script type='application/json' id='tkData'>$ticketJson</script><script type='application/json' id='tkMeta'>$ticketMeta</script>
 </section>
 $mdmSection
 
@@ -2248,6 +2277,40 @@ $(if ($mdeCollected) { (New-KvTable $mdeKv) + (New-HtmlTable $mdeRows -Id 'tbl-m
     var inp=bar.querySelector('input'); if(inp) inp.addEventListener('input',function(){ q=inp.value.toLowerCase(); apply(); });
     apply();
   });
+  // Remediation tickets: copy one finding, copy all, or download a CSV for the IT provider / MSP
+  var tkEl=document.getElementById('tkData'), tkMetaEl=document.getElementById('tkMeta');
+  if(tkEl&&tkMetaEl){
+    var tk=JSON.parse(tkEl.textContent), meta=JSON.parse(tkMetaEl.textContent);
+    function ticketText(t){
+      var L=['['+t.Ref+'] '+t.Priority+': '+t.Finding,
+             'Client: '+meta.Client,
+             'Source: AuditHat M365 Audit Evidence report '+meta.Date+' (section: '+t['Report section']+')',
+             'Priority: '+t.Priority,
+             'Current state: '+t['Current state'],
+             'Requested change: '+t['Recommended action']];
+      if(t['Why it matters']) L.push('Why it matters / effort: '+t['Why it matters']);
+      if(t['Secure Score points']) L.push('Microsoft Secure Score points available: '+t['Secure Score points']);
+      if(t.Link) L.push('Reference: '+t.Link);
+      L.push('Acceptance: the next AuditHat report lists '+t.Ref+' as resolved.');
+      return L.join('\n');
+    }
+    function flash(b,msg){ var o=b.textContent; b.textContent=msg; b.disabled=true; setTimeout(function(){ b.textContent=o; b.disabled=false; },1600); }
+    function copyText(s,b){
+      function fallback(){ var ta=document.createElement('textarea'); ta.value=s; ta.setAttribute('readonly',''); ta.style.position='fixed'; ta.style.left='-9999px';
+        document.body.appendChild(ta); ta.select(); var ok=false; try{ ok=document.execCommand('copy'); }catch(e){} document.body.removeChild(ta); flash(b, ok?'Copied':'Copy failed'); }
+      if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(s).then(function(){ flash(b,'Copied'); },fallback); } else { fallback(); }
+    }
+    function csvCell(v){ v=(v==null?'':String(v)); return '"'+v.replace(/"/g,'""')+'"'; }
+    document.querySelectorAll('button.tk').forEach(function(b){ b.addEventListener('click',function(){ var t=tk[parseInt(b.getAttribute('data-i'),10)]; if(t) copyText(ticketText(t),b); }); });
+    var all=document.getElementById('tkAll'); if(all) all.addEventListener('click',function(){ copyText(tk.map(ticketText).join('\n\n----------------------------------------\n\n'),all); });
+    var csv=document.getElementById('tkCsv'); if(csv) csv.addEventListener('click',function(){
+      var cols=['Ref','Priority','Finding','Current state','Recommended action','Why it matters','Secure Score points','Report section','Link'];
+      var lines=[cols.concat(['Client','Report date']).map(csvCell).join(',')];
+      tk.forEach(function(t){ lines.push(cols.map(function(c){ return csvCell(t[c]); }).concat([csvCell(meta.Client),csvCell(meta.Date)]).join(',')); });
+      var blob=new Blob(['\ufeff'+lines.join('\r\n')],{type:'text/csv;charset=utf-8'}); var a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=meta.File;
+      document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); document.body.removeChild(a); },500); flash(csv,'Downloaded');
+    });
+  }
   // one info panel open at a time; click anywhere else closes it
   document.addEventListener('click', function(e){
     var open=document.querySelectorAll('details.info[open]');
@@ -2258,11 +2321,15 @@ $(if ($mdeCollected) { (New-KvTable $mdeKv) + (New-HtmlTable $mdeRows -Id 'tbl-m
 </main></body></html>
 "@
 
-$safeClient = ($ClientLabel -replace '[^A-Za-z0-9 ._()-]', '').Trim()
-if (-not $safeClient) { $safeClient = 'Client' }
 $reportPath = Join-Path $OutputFolder "$safeClient - M365 Audit Evidence $($ReportDate.ToString('yyyy-MM-dd')).html"
 [System.IO.File]::WriteAllText($reportPath, $html, [System.Text.Encoding]::UTF8)
 Write-Host "HTML report: $reportPath" -ForegroundColor Green
+if ($ticketRows.Count) {
+    $ticketCsvPath = Join-Path $OutputFolder $ticketCsvName
+    $ticketRows | Select-Object *, @{ Name = 'Client'; Expression = { $ClientLabel } }, @{ Name = 'Report date'; Expression = { $ReportDate.ToString('yyyy-MM-dd') } } |
+        Export-Csv -Path $ticketCsvPath -NoTypeInformation -Encoding UTF8
+    Write-Host "Remediation tickets (CSV): $ticketCsvPath" -ForegroundColor Green
+}
 
 # ----------------------------------------------------------------------------------------------
 # Optional Word documents (requires Microsoft Word installed on this machine)

@@ -199,13 +199,39 @@ mail forwarding, POP/IMAP/SMTP AUTH, SPF/DKIM/DMARC, anti-spam, anti-phishing, S
 Defender licensing and directory sync. Icons appear in the summary table, key/value tables and data
 tables alike, so an executive can click through from any page without reading the detail sections.
 
+## Hand findings to your IT provider or MSP as tickets
+
+The report is built so that an executive or security officer can run it, read it, and then ask
+whoever administers the tenant (internal IT or a managed service provider) to make the changes,
+without that person needing to understand PowerShell or Microsoft Graph.
+
+- **Stable reference.** Every row in the Remediation Plan has a reference such as `AH-3F2A1C`. It
+  is derived from the finding's name, so the same finding has the same reference in every report,
+  on every tenant. Put it in the ticket title and the next report tells you whether it is closed.
+- **Copy ticket.** The button on each row copies ready-to-paste ticket text: reference, priority,
+  finding, client, report date and section, current state, requested change, why it matters,
+  Secure Score points available, the Defender link where there is one, and an acceptance line
+  ("the next AuditHat report lists AH-3F2A1C as resolved").
+- **Copy all tickets** copies every open finding in that format, separated by rules, for an email
+  or a meeting pack.
+- **Download tickets (CSV)** saves the plan as a spreadsheet (Ref, Priority, Finding, Current state,
+  Recommended action, Why it matters, Secure Score points, Report section, Link, Client, Report date)
+  for bulk import into ServiceNow, ConnectWise, Autotask, Jira, Planner or Excel. The script also
+  writes the same file next to the report as `<Client> - Remediation tickets <date>.csv`.
+- **Priority filters and search** above the plan narrow it to Critical, High, Medium or Low, or to
+  a keyword, before copying.
+- **Closure is measured, not reported.** When the MSP says a ticket is done, run the report again.
+  "Progress since last report" in the Executive Summary lists the finding as *Resolved*, or still
+  open, and the trend charts move accordingly. Nothing in this cycle gives the script or Audit Hat
+  any write access to the tenant.
+
 ## What the report contains
 
 | # | Section | Source | What it answers |
 |---|---------|--------|-----------------|
 | 1 | Executive Summary | organization, subscribedSkus, security/secureScores, history file, computed | Narrative paragraph and KPI tiles (Secure Score vs target, controls met, Critical/High and Medium findings, users without MFA, stale users, Global Administrators, devices, devices not in Intune, stale devices), top five priorities, **Progress since last report** (change log of controls, findings and counts versus the previous run, Secure Score trend chart with target line, open findings by priority chart), privacy statement, tenant details with bulleted licensed capabilities, directory synchronization status (Entra Connect, AD domains, sync server), verified domains table, subscriptions |
 | 2 | Security Controls Summary | computed from everything below | One row per control (MFA, legacy auth, device access, Intune, TAP, device join, forwarding, consent, **email authentication**, **email protection**, **endpoint protection**, Secure Score, privileged roles): Status, Evidence, link to detail. Only **enabled** CA policies count as enforced |
-| 3 | Remediation Plan | summary results, secureScoreControlProfiles, directoryRoles, subscribedSkus | Every failed control with a recommended action, privileged-access findings (Global Admins without MFA, too many or a single Global Admin), licensing gaps, and every unimplemented Secure Score action with points available. Sorted Critical, High, Medium, Low, then by points |
+| 3 | Remediation Plan | summary results, secureScoreControlProfiles, directoryRoles, subscribedSkus | Every failed control with a recommended action, privileged-access findings (Global Admins without MFA, too many or a single Global Admin), licensing gaps, and every unimplemented Secure Score action with points available. Sorted Critical, High, Medium, Low, then by points. Each finding carries a stable reference (`AH-xxxxxx`), a **Copy ticket** button, priority filters and a **CSV download**; the same CSV is written next to the report |
 | 4 | MDM Compliance Policies | deviceCompliancePolicies | Intune compliance policies per platform: Basics / Settings / Actions for noncompliance / Assignments |
 | 5 | Intune Policies | deviceConfigurations, configurationPolicies (settings catalog), intents (endpoint security), enrollment configs, app protection | Every Intune policy and the settings behind it |
 | 6 | Managed Devices | managedDevices, devices (+registeredOwners) | Device counts, then one device list joining every Entra ID device with its Intune record: owner, **last user** seen by Intune, last activity, compliance, encryption. Quick filters: Stale (90 days), Not in Intune, Noncompliant, Not encrypted, Personal, Windows, Disabled, plus text search |
@@ -357,11 +383,41 @@ for the approver. The report never guesses.
   licence reason); Secure Score text carried raw HTML. Not yet exercised live: Intune sections with real
   data, Conditional Access policies, PIM, `-WordDocs`, and `Get-InboxRule` on a large tenant.
 
+## Extending the report
+
+The report is designed to grow. Adding a check means editing the script, but every piece follows the
+same small pattern and the history, change log, info icons and ticket export pick the new item up
+automatically.
+
+1. **Collect the data.** Call `Get-GraphAllSafe '<graph path>' '<what it is>'` (pages through
+   results, records a failure with a licence hint instead of stopping) or an Exchange cmdlet wrapped
+   in `Invoke-ExoSafe`. Keep it read-only: never add a scope that is not `*.Read.*`.
+2. **Decide the status.** Compute a short status string the way the existing controls do
+   (`Enabled`, `Partial`, `Not enforced`, `Blocked`, `Not licensed`, ...) and an evidence sentence.
+   The status regexes near the Security Controls Summary builder colour it green, amber or red.
+3. **Add a summary row.** `Add-SummaryRow '<Control name>' $status $evidence '<Section title>'`.
+   This single call puts the control in section 2, in the controls-met KPI, in the per-run history
+   and therefore in the "Progress since last report" change log.
+4. **Explain it.** Add an entry to `$IssueCatalog` with `Title`, `Why` (written for a bank or credit
+   union board) and `Fix`, then map it in `$SummaryIssueMap` (summary row) or pass its key in the
+   `_issues` hashtable of a table row or `-Issues` of `New-KvTable` to get the clickable **i** icon.
+5. **Make it a finding.** Add a line to `$remediationGuides` (`Control`, `Bad` status regex,
+   `Priority`, `Action`) or call `Add-Remediation` directly for a finding that is not a control.
+   It then appears in the Remediation Plan, gets its stable `AH-` reference, the Copy ticket button
+   and the CSV export, and is counted in the open-findings chart.
+6. **Add a section (optional).** Append `@{ Id = 'myid'; Title = '15. My Section' }` to
+   `$sections`, map the title in `$SectionAnchors`, and emit `<section id='myid'>...</section>` in the
+   report body using `New-HtmlTable` (with `-Id` and `-Filters` for quick filters) or `New-KvTable`.
+7. **Document it.** Update the table above, `CHANGELOG.md` and `$ScriptVersion`, and run
+   `Invoke-ScriptAnalyzer` and a parse in Windows PowerShell 5.1 before committing.
+
+Pull requests that add checks relevant to financial institutions are welcome.
+
 ## Possible next steps
 
 - Parallel inbox-rule scan for large tenants
 - Entra sign-in log sample showing legacy auth actually in use (P1 tenants)
-- Export the Security Controls Summary as CSV for the audit workbook
+- Export the Security Controls Summary as CSV for the audit workbook (the Remediation Plan already exports)
 - Replace Word COM with a docx library so `-WordDocs` works without Word
 
 ## License

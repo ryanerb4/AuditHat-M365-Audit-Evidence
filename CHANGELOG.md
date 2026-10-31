@@ -31,6 +31,9 @@ First public release.
   anti-phishing, Safe Links, Safe Attachments, Defender for Endpoint devices and scores.
 - Directory synchronization status (Entra Connect, on-premises AD domains, sync server) and a link to
   the companion AuditHat AD Governance Report.
+- Remediation Plan as tickets: stable `AH-xxxxxx` reference per finding, Copy ticket and Copy all
+  buttons (ready-to-paste text for the IT provider or MSP), priority filters and search, CSV download
+  in the report and the same CSV written next to the report.
 - Per-tenant run history with "Progress since last report": change log of controls, findings and
   headline counts, plus Secure Score and open-findings trend charts (inline SVG).
 - Licence-aware explanations when Graph refuses unlicensed features (Intune, Entra ID P1/P2).
