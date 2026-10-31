@@ -1,0 +1,9 @@
+# Generated reports contain tenant data: never commit them
+M365-Audit-Evidence/
+*.html
+*.docx
+# Local per-tenant settings
+M365AuditEvidence.settings.json
+# Editor and OS noise
+.vscode/
+Thumbs.db
