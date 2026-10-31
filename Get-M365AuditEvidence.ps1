@@ -753,7 +753,7 @@ function Get-StatusKind { param($Status)
     $v = [string]$Status
     if ($v -match '^(Enabled|Enforced|Blocked|Yes|All enrolled|Restricted|Target met|Complete|Configured|Onboarded|None found|Clear|On track|Done|Pass|True|Compliant|Required|Improved|Resolved|Low|On$|Active|Succeeded|success|Verified|\d+ polic)') { return 'good' }
     if ($v -match '^(Not available|Not collected|Not measured|Not checked|Not scanned|Not applicable|Unknown|n/a|Baseline|Skipped)') { return 'na' }
-    if ($v -match '^(Disabled|Not enforced|Not blocked|No$|Not deployed|None$|None \(|Not started|Active external|Allowed by policy|Below target|Missing|Licensed, not configured|Attention needed|\d+ urgent|Anyone links|Off track|Urgent|False|Off$|Regressed|New$|High|Critical|Not configured|Not published|Not licensed|Slipping|Failed|Inactive|Impaired|Noncompliant|Not registered|enabledForReportingButNotEnforced)') { return 'warn' }
+    if ($v -match '^(Disabled|Not enforced|Not blocked|No$|Not deployed|None$|None \(|Not started|Active external|Allowed by policy|Below target|Missing|Licensed, not configured|Attention needed|\d+ urgent|Anyone links|Off track|Urgent|False|Off$|Regressed|New$|High|Critical|Not configured|Not published|Not licensed|Slipping|Failed|Inactive|Impaired|Noncompliant|Not registered|Action needed|enabledForReportingButNotEnforced)') { return 'warn' }
     if ($v -match '^(Partial|Allowed|All users allowed|No Windows|EOP only|No email domains|No devices onboarded|Guests present|In progress|\d+ to review|Review|Changed|Medium|Holding|Soft fail|Neutral|One selector|none \(monitor|quarantine|reportOnly|Pass all)') { return 'mid' }
     if ($v -match '^(\d+ assignments|\d+ \/ \d+|Info)') { return 'info' }
     return 'info'
