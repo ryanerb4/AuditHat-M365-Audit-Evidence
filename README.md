@@ -308,7 +308,7 @@ without that person needing to understand PowerShell or Microsoft Graph.
 
 | # | Section | Source | What it answers |
 |---|---------|--------|-----------------|
-| 1 | Executive Summary | organization, subscribedSkus, security/secureScores, history file, computed | Narrative paragraph and KPI tiles (Secure Score vs target, controls met, Critical/High and Medium findings, users without MFA, stale users, Global Administrators, devices, devices not in Intune, stale devices), top five priorities, **Progress since last report** (change log of controls, findings and counts versus the previous run, Secure Score trend chart with target line, open findings by priority chart), privacy statement, tenant details with bulleted licensed capabilities, directory synchronization status (Entra Connect, AD domains, sync server), verified domains table, subscriptions |
+| 1 | Executive Summary | organization, subscribedSkus, security/secureScores, history file, computed | **Verdict** with trend, compromise-review, scorecard and maturity chips; four tiles; **Headlines**; **Top priorities**; **Scorecard** (goal, actual, on/off track, movement); **Rocks** (90-day objectives with owner, due, status); **Issues list** (decisions, repeat findings, coverage gaps); progress charts with every change folded; plan by phase with target dates; GLBA board-report mapping; governance and sign-off. Then the narrative paragraph and KPI tiles (Secure Score vs target, controls met, Critical/High and Medium findings, users without MFA, stale users, Global Administrators, devices, devices not in Intune, stale devices), top five priorities, **Progress since last report** (change log of controls, findings and counts versus the previous run, Secure Score trend chart with target line, open findings by priority chart), privacy statement, tenant details with bulleted licensed capabilities, directory synchronization status (Entra Connect, AD domains, sync server), verified domains table, subscriptions |
 | 2 | Review These Now: Possible Indications of Compromise | auditLogs/directoryAudits (targeted activities), auditLogs/signIns (P1), identityProtection (P2), applications and servicePrincipals, Exchange mailboxes, inbox rules, permissions and transport rules, Search-UnifiedAuditLog (sharing, downloads, mailbox changes), Get-SafeLinksDetailReport | A plain-language **situation table** (Urgent / Review / Clear / Not checked) covering: mail forwarded outside the organization, inbox rules that hide or delete mail, known-abused OAuth apps (PerfectData Software, eM Client, rclone, Supermailer and others) and unverified apps with mail or file access, new apps and credentials, Anyone links and external sharing, unusual download or sync volume, mailbox rule and permission changes in the audit log, malicious link clicks, domain/federation changes, users at risk, legacy sign-ins, password sprays, multi-country sign-ins, MFA denials, role and MFA changes, new accounts and delegates, mailbox auditing. Detail tables behind every row |
 | 3 | Security Controls Summary | computed from everything below | One row per control (MFA, legacy auth, device access, Intune, TAP, device join, forwarding, consent, **email authentication**, **email protection**, **endpoint protection**, Secure Score, privileged roles): Status, Evidence, link to detail. Only **enabled** CA policies count as enforced |
 | 4 | Remediation Plan | summary results, secureScoreControlProfiles, directoryRoles, subscribedSkus, built-in playbooks | **Roadmap** by phase (this week, 30 days, 90 days, 12 months) then every failed control with a recommended action, **step-by-step instructions, owner, effort, prerequisite and a done-when test**, privileged-access findings (Global Admins without MFA, too many or a single Global Admin), licensing gaps, and every unimplemented Secure Score action with points available. Sorted Critical, High, Medium, Low, then by points. Each finding carries a stable reference (`AH-xxxxxx`), a **Copy ticket** button, priority filters and a **CSV download**; the same CSV is written next to the report |
@@ -571,10 +571,25 @@ roadmap for this week, 30 days, 90 days and the year. Secure Score actions are m
 playbooks so Microsoft's one-line recommendations are backed by concrete steps.
 
 **What is in it for a board member who is not technical?**
-The first page: one paragraph in plain language, a row of tiles (score, controls met, findings,
-compromise indicators, passkeys, MFA gaps, administrators, devices), the top five priorities, the
-progress since last month with trend charts, and a governance table with the review cadence and the
-next due date. There is a sign-off line for the board.
+The first page is laid out the way a business runs its meetings (the EOS pattern many institutions
+use): a one-word **verdict** (Act now, Needs attention, In good shape) with one sentence of reason and
+chips for trend, compromise review, scorecard and indicative maturity; four tiles; **Headlines** (the
+good and bad news in a sentence each); **Top priorities**; a **Scorecard** of measurables with a goal,
+the actual, on or off track and the movement since last month; **Rocks**, the 90-day objectives that
+group the findings into business outcomes with owner, due date and status; an **Issues list** of what
+the committee must decide or unblock (licences, policy, repeat findings, coverage gaps); and the trend
+charts. Everything denser is folded underneath, and the sign-off block records that the board was told.
+
+**Does it satisfy the annual GLBA board report and what examiners ask about board reporting?**
+The Interagency Guidelines require management to report to the board at least annually on the status
+of the information security program: risk assessment, risk management and control decisions, service
+provider arrangements, results of testing, breaches and responses, recommendations. The first page maps
+each element to where it is answered for the Microsoft 365 environment, and the page is designed around
+what examiners look for in board reporting: evidence the board was told (sign-off), decisions it made
+(issues list), findings tracked with owners and dates (rocks and the plan by phase), closure proven by
+the next report (progress), trends across cycles (charts) and no repeat findings (repeat-findings
+table). Core systems, other vendors, physical security and the written program remain part of the
+wider report.
 
 **What do examiners actually ask for?**
 In our experience: MFA enforcement and registration, privileged-access review, legacy authentication,

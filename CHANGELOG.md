@@ -31,6 +31,12 @@ First public release.
   anti-phishing, Safe Links, Safe Attachments, Defender for Endpoint devices and scores.
 - Directory synchronization status (Entra Connect, on-premises AD domains, sync server) and a link to
   the companion AuditHat AD Governance Report.
+- Executive Summary rebuilt as a one-page board view in the EOS pattern: verdict (Act now / Needs
+  attention / In good shape) with reason and chips; four headline tiles with the rest folded; Headlines
+  (good and bad news); To-dos this week; Scorecard (goal, actual, on/off track, movement since last
+  report); Rocks (90-day objectives with owner, due date, status); Issues list (licence and policy
+  decisions, repeat findings, coverage gaps); progress charts with the change log folded; plan by phase;
+  mapping to the GLBA annual board-report elements and to what examiners look for in board reporting.
 - Review These Now: when the unified audit log is off, the sharing, download and mailbox-rule rows read
   Urgent ("cannot be checked") instead of Not checked, and the Anyone-links row combines the audit log
   with the section 19 share scan.

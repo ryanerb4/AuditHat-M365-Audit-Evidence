@@ -691,6 +691,8 @@ $IssueCatalog = @{
     'calendar-default-open' = @{ Title = 'Calendar readable by everyone in the organization';  Why = 'With the Default permission above Free/Busy, every account can read meeting subjects, locations and attendees, which reveals customer meetings, exams and deals.'; Fix = 'Set the Default calendar permission to AvailabilityOnly (free/busy) or LimitedDetails for the mailboxes listed; share full details only with named people.' }
     'calendar-anonymous'   = @{ Title = 'Calendar readable by anonymous users';               Why = 'Anyone with the published calendar link can read it without signing in.'; Fix = 'Set the Anonymous calendar permission to None and turn off anonymous calendar publishing in the sharing policy.' }
     'sharing-policy-external' = @{ Title = 'Calendar sharing policy allows external or anonymous sharing'; Why = 'The Exchange sharing policy decides whether users can publish or share calendar details outside the organization.'; Fix = 'In the Exchange admin center sharing policy, limit external calendar sharing to free/busy for approved domains and remove Anonymous publishing.' }
+    'repeat-finding'       = @{ Title = 'Repeat finding';                                     Why = 'This finding has been open in three or more consecutive reports. Examiners read a repeat finding as a sign that the program is not being worked, not merely as a technical gap, and it often becomes a Matter Requiring Attention.'; Fix = 'Assign a named owner and a target date in the committee minutes, remove whatever is blocking it (budget, licence, vendor), and report the closure at the next review.' }
+    'ga-count'             = @{ Title = 'Global Administrator count outside the recommended two to four'; Why = 'One administrator is a single point of failure; more than four widens the blast radius of a phished account.'; Fix = 'Keep two to four Global Administrators including a break-glass account; give everyone else a least-privilege role.' }
     'guest'                = @{ Title = 'Guest account';                                     Why = 'Guests are external people with access to shared content; stale or unreviewed guests are a common data-leak path.'; Fix = 'Review guests periodically, remove those no longer needed, and consider access reviews or restricting guest invitations.' }
 }
 function New-InfoIcon {
@@ -745,9 +747,9 @@ function New-HtmlTable {
             if ($rowHtml -and $rowHtml.Contains($c)) { $cell = [string]$rowHtml[$c] }   # pre-built, already encoded HTML
             $cls = ''
             switch -Regex ([string]$v) {
-                '^(True|Enabled|enabled|Compliant|Required|Yes|Block|block|On|Improved|Resolved|Clear|Low)$' { $cls = " class='good'" }
-                '^(False|Disabled|disabled|No|Not registered|Off|enabledForReportingButNotEnforced|Regressed|New|Urgent|High|Critical)$' { $cls = " class='warn'" }
-                '^(Review|Partial|Changed|Medium|In progress.*)$' { $cls = " class='mid'" }
+                '^(True|Enabled|enabled|Compliant|Required|Yes|Block|block|On|Improved|Resolved|Clear|Low|On track|Done)$' { $cls = " class='good'" }
+                '^(False|Disabled|disabled|No|Not registered|Off|enabledForReportingButNotEnforced|Regressed|New|Urgent|High|Critical|Off track)$' { $cls = " class='warn'" }
+                '^(Review|Partial|Changed|Medium|Not started|In progress.*)$' { $cls = " class='mid'" }
             }
             [void]$sb.Append("<td$cls>$cell$(Get-RowIssueIcon $rowIssues $c)</td>")
         }
@@ -3112,6 +3114,16 @@ details.info .tip p{margin:6px 0 0}
 .modal pre{margin:0;padding:12px 14px;overflow:auto;white-space:pre-wrap;word-break:break-word;font:10pt Consolas,monospace;flex:1 1 auto;background:#fafafa}.modal-actions{display:flex;gap:12px;align-items:center;padding:10px 14px;border-top:1px solid var(--line)}.modal-actions .hint{font-size:9pt;color:#555}body.noscroll{overflow:hidden}
 .perms{margin:0;padding-left:16px;font-size:9.5pt}.perms li{margin:1px 0}button.more{font:inherit;font-size:9pt;border:1px solid var(--blue);background:#fff;color:var(--blue);border-radius:4px;padding:1px 8px;cursor:pointer;margin-top:4px}
 .modal-body{padding:10px 14px;overflow:auto;font-size:10pt;flex:1 1 auto}.modal-body h5{margin:10px 0 4px;color:var(--blue);font-size:10pt}.modal-body ul{margin:0;padding-left:18px}.modal-body li{margin:2px 0}
+.audience{font-size:10.5pt;color:#555;max-width:1000px;margin:0 0 10px}
+.verdict{border-radius:10px;padding:18px 22px;margin:8px 0 18px;border:1px solid var(--line);border-left:10px solid var(--blue);background:#fff}
+.verdict.bad{border-left-color:var(--warn);background:#fff5f5}.verdict.mid{border-left-color:#B8860B;background:#fffaf0}.verdict.good{border-left-color:var(--good);background:#f3faf4}
+.verdict .vlabel{font-size:9.5pt;text-transform:uppercase;letter-spacing:.08em;color:#555}.verdict .vword{font-size:26pt;font-weight:bold;line-height:1.1;margin:2px 0 6px;color:var(--blue)}.verdict.bad .vword{color:var(--warn)}.verdict.mid .vword{color:#8a6508}.verdict.good .vword{color:var(--good)}
+.verdict p{margin:4px 0 10px;font-size:11.5pt;max-width:1000px}.chips{display:flex;flex-wrap:wrap;gap:8px}.chip{display:inline-block;border-radius:14px;padding:3px 12px;font-size:9.5pt;border:1px solid var(--line);background:#fff;color:#333}.chip.good{border-color:var(--good);color:var(--good)}.chip.bad{border-color:var(--warn);color:var(--warn)}.chip.mid{border-color:#B8860B;color:#8a6508}
+.eos{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:24px;margin:4px 0 10px}.eos h3{margin-top:6px}
+ul.headlines{list-style:none;padding:0;margin:6px 0}ul.headlines li{display:flex;gap:10px;align-items:flex-start;padding:7px 0;border-bottom:1px solid var(--line);font-size:11pt}ul.headlines .dot{flex:0 0 12px;height:12px;border-radius:50%;margin-top:5px;background:var(--good)}ul.headlines li.bad .dot{background:var(--warn)}
+ol.prio{list-style:none;padding:0;margin:6px 0 14px}ol.prio li{display:flex;gap:12px;align-items:flex-start;padding:7px 0;border-bottom:1px solid var(--line)}ol.prio .badge{flex:0 0 78px;text-align:center;border-radius:4px;padding:3px 0;font-size:9pt;font-weight:bold;color:#fff;background:var(--blue)}ol.prio .badge.Critical,ol.prio .badge.High{background:var(--warn)}ol.prio .badge.Medium{background:#B8860B}ol.prio .badge.Low{background:#777}ol.prio .who{color:#555;font-size:9.5pt}
+details.more{border:1px solid var(--line);border-radius:6px;padding:8px 12px;margin:10px 0;background:#fff}details.more summary{cursor:pointer;color:var(--blue);font-weight:bold;font-size:10.5pt}details.more[open] summary{margin-bottom:8px}hr.divider{border:0;border-top:2px solid var(--line);margin:26px 0 14px}
+.kpi.bad{border-left-color:var(--warn)}.kpi.bad .v{color:var(--warn)}.kpi.good{border-left-color:var(--good)}.kpi.good .v{color:var(--good)}.kpi.mid{border-left-color:#B8860B}.kpi.mid .v{color:#8a6508}
 .privacy{background:#eef6ee;border:1px solid #bfe0c2;border-left:5px solid var(--good);padding:10px 14px;border-radius:4px;font-size:10pt;margin:16px 0}
 @media print{nav,.pager{display:none}body.paged main>section{display:block}.ticketbar,button.tk,button.more,.modal{display:none}.permfull{display:block!important}main{margin:0;padding:0}section{page-break-before:always}section:first-of-type{page-break-before:avoid}table.grid thead th{position:static}.filters{display:none}details.info .tip{position:static;display:block;width:auto;box-shadow:none;margin-top:4px}details.info summary{display:none}details.info:not([open]) .tip{display:none}}
 "@
@@ -3276,21 +3288,21 @@ $enabledMemberCount = @($users | Where-Object { $_.accountEnabled -and $_.userTy
 $noMfaCount    = if (@($regDetails).Count) { @($userRows | Where-Object { " $($_['_tags']) " -like '* nomfa *' }).Count } else { $null }
 $staleUserCount = if ($signInAvailable) { @($userRows | Where-Object { " $($_['_tags']) " -like '* stale *' }).Count } else { $null }
 $notInIntuneCount = @($allDeviceRows | Where-Object { " $($_['_tags']) " -like '* notintune *' -and $_['Enabled'] -ne $false }).Count
-$kpiHtml = New-Object System.Text.StringBuilder
-function Add-Kpi { param($Value, [string]$Label, [string]$Class = '') [void]$script:kpiHtml.Append("<div class='kpi $Class'><div class='v'>$(HtmlEnc $Value)</div><div class='l'>$(HtmlEnc $Label)</div></div>") }
-if ($null -ne $scoreCurrent) { Add-Kpi "$scorePct%" "Secure Score: $scoreCurrent of $scoreMax points (target $scoreTarget)" $(if ($scoreCurrent -ge $scoreTarget) { 'good' } else { 'bad' }) } else { Add-Kpi 'n/a' 'Secure Score not available' 'mid' }
-Add-Kpi "$($controlsMet.Count) of $($controlsRated.Count)" 'Security controls met' $(if ($controlsMet.Count -eq $controlsRated.Count) { 'good' } elseif ($controlsMet.Count * 2 -ge $controlsRated.Count) { 'mid' } else { 'bad' })
-Add-Kpi $findCritHigh 'Critical and High findings' $(if ($findCritHigh -eq 0) { 'good' } else { 'bad' })
-Add-Kpi $findMedium 'Medium findings' $(if ($findMedium -eq 0) { 'good' } else { 'mid' })
-Add-Kpi $(if ($null -ne $passkeyPct) { "$passkeyPct%" } else { 'n/a' }) 'Users with phishing-resistant MFA (passkeys)' $(if ($null -eq $passkeyPct) { 'mid' } elseif ($passkeyPct -ge 90) { 'good' } elseif ($passkeyPct -gt 0) { 'mid' } else { 'bad' })
-Add-Kpi $(if ($iocCollected) { "$iocUrgentCount / $iocReviewCount" } else { 'n/a' }) "Compromise indicators: urgent / to review ($AuditDays days)" $(if (-not $iocCollected) { 'mid' } elseif ($iocUrgentCount) { 'bad' } elseif ($iocReviewCount) { 'mid' } else { 'good' })
-Add-Kpi $enabledMemberCount 'Enabled user accounts' ''
-Add-Kpi $(if ($null -ne $noMfaCount) { $noMfaCount } else { 'n/a' }) 'Users without MFA registered' $(if ($null -eq $noMfaCount) { 'mid' } elseif ($noMfaCount -eq 0) { 'good' } else { 'bad' })
-Add-Kpi $(if ($null -ne $staleUserCount) { $staleUserCount } else { 'n/a' }) "Stale users (no sign-in in $StaleDays days)" $(if ($null -eq $staleUserCount) { 'mid' } elseif ($staleUserCount -eq 0) { 'good' } else { 'mid' })
-Add-Kpi $gaCount 'Global Administrators' $(if ($gaCount -ge 2 -and $gaCount -le 4) { 'good' } else { 'mid' })
-Add-Kpi $allDeviceRows.Count 'Devices (Entra ID and Intune)' ''
-Add-Kpi $notInIntuneCount 'Enabled devices not in Intune' $(if ($notInIntuneCount -eq 0) { 'good' } else { 'mid' })
-Add-Kpi $staleDeviceCount "Stale devices ($StaleDays days)" $(if ($staleDeviceCount -eq 0) { 'good' } else { 'mid' })
+$kpiHtml = New-Object System.Text.StringBuilder; $kpiMoreHtml = New-Object System.Text.StringBuilder
+function Add-Kpi { param($Value, [string]$Label, [string]$Class = '', [switch]$More) $sb = $(if ($More) { $script:kpiMoreHtml } else { $script:kpiHtml }); [void]$sb.Append("<div class='kpi $Class'><div class='v'>$(HtmlEnc $Value)</div><div class='l'>$(HtmlEnc $Label)</div></div>") }
+if ($null -ne $scoreCurrent) { Add-Kpi "$scorePct%" "Secure Score (goal $TargetScorePercent%)" $(if ($scoreCurrent -ge $scoreTarget) { 'good' } else { 'bad' }) } else { Add-Kpi 'n/a' 'Secure Score not available' 'mid' }
+Add-Kpi "$($controlsMet.Count) of $($controlsRated.Count)" 'Controls in place' $(if ($controlsMet.Count -eq $controlsRated.Count) { 'good' } elseif ($controlsMet.Count * 2 -ge $controlsRated.Count) { 'mid' } else { 'bad' })
+Add-Kpi $findCritHigh 'High-priority items due within 30 days' $(if ($findCritHigh -eq 0) { 'good' } else { 'bad' })
+Add-Kpi -More $findMedium 'Medium findings' $(if ($findMedium -eq 0) { 'good' } else { 'mid' })
+Add-Kpi -More $(if ($null -ne $passkeyPct) { "$passkeyPct%" } else { 'n/a' }) 'Users with phishing-resistant MFA (passkeys)' $(if ($null -eq $passkeyPct) { 'mid' } elseif ($passkeyPct -ge 90) { 'good' } elseif ($passkeyPct -gt 0) { 'mid' } else { 'bad' })
+Add-Kpi $(if ($iocCollected) { "$iocUrgentCount / $iocReviewCount" } else { 'n/a' }) 'Warning signs of an intrusion: urgent today / review this week' $(if (-not $iocCollected) { 'mid' } elseif ($iocUrgentCount) { 'bad' } elseif ($iocReviewCount) { 'mid' } else { 'good' })
+Add-Kpi -More $enabledMemberCount 'Enabled user accounts' ''
+Add-Kpi -More $(if ($null -ne $noMfaCount) { $noMfaCount } else { 'n/a' }) 'Users without MFA registered' $(if ($null -eq $noMfaCount) { 'mid' } elseif ($noMfaCount -eq 0) { 'good' } else { 'bad' })
+Add-Kpi -More $(if ($null -ne $staleUserCount) { $staleUserCount } else { 'n/a' }) "Stale users (no sign-in in $StaleDays days)" $(if ($null -eq $staleUserCount) { 'mid' } elseif ($staleUserCount -eq 0) { 'good' } else { 'mid' })
+Add-Kpi -More $gaCount 'Global Administrators' $(if ($gaCount -ge 2 -and $gaCount -le 4) { 'good' } else { 'mid' })
+Add-Kpi -More $allDeviceRows.Count 'Devices (Entra ID and Intune)' ''
+Add-Kpi -More $notInIntuneCount 'Enabled devices not in Intune' $(if ($notInIntuneCount -eq 0) { 'good' } else { 'mid' })
+Add-Kpi -More $staleDeviceCount "Stale devices ($StaleDays days)" $(if ($staleDeviceCount -eq 0) { 'good' } else { 'mid' })
 $mfaProductShort = if ($mfaProduct) { ($mfaProduct -split ' \(')[0] } else { 'Microsoft Entra multifactor authentication' }
 $execNarrative = "This report was produced on $($ReportDate.ToString('MMMM d, yyyy')) from the live configuration of the $(HtmlEnc $ClientLabel) Microsoft 365 tenant, read-only, by $(HtmlEnc $ctx.Account). " +
     "It measures $($controlsRated.Count) security controls that regulators and examiners ask about; <b>$($controlsMet.Count) are met</b>. " +
@@ -3320,7 +3332,7 @@ $snapshot = [ordered]@{
     Users = [ordered]@{ Enabled = $enabledMemberCount; NoMfa = $noMfaCount; Stale = $staleUserCount; GlobalAdmins = $gaCount; Passkey = $(if ($null -ne $passkeyPct) { $passkeyUsers } else { $null }); PasskeyPct = $passkeyPct; AdminsPhishingResistant = $(if ($regEnabled.Count) { $adminPhishRes } else { $null }) }
     Devices = [ordered]@{ Total = $allDeviceRows.Count; NotInIntune = $notInIntuneCount; Stale = $staleDeviceCount }
     Ioc = [ordered]@{ Urgent = $(if ($iocCollected) { $iocUrgentCount } else { $null }); Review = $(if ($iocCollected) { $iocReviewCount } else { $null }) }
-    Sharing = [ordered]@{ TeamsWithGuests = $(if (Get-GraphFailure 'teams') { $null } else { $teamsWithGuests }); ExternalShares = $(if ($spoActivity.Count -or $odActivity.Count) { $extShareTotal } else { $null }); Guests = @($users | Where-Object { $_.userType -eq 'Guest' }).Count }
+    Sharing = [ordered]@{ TeamsWithGuests = $(if (Get-GraphFailure 'teams') { $null } else { $teamsWithGuests }); ExternalShares = $(if ($spoActivity.Count -or $odActivity.Count) { $extShareTotal } else { $null }); Guests = @($users | Where-Object { $_.userType -eq 'Guest' }).Count; Anyone = $(if ($SkipShareScan -and -not $ualCollected) { $null } else { $shareAnyone + $anonLinkCount }) }
 }
 $previous = if ($history.Count) { $history[-1] } else { $null }
 function Get-StatusRank { param([string]$s)
@@ -3704,6 +3716,132 @@ $(New-HtmlTable $odRows -Id 'tbl-onedrive' -Filters $OdFilters -Columns 'Owner',
 "@
 
 
+# ---- Executive page: verdict, headlines, scorecard, rocks (90-day objectives), issues list, plan, board-report mapping
+$critCount = @($remediationSorted | Where-Object { $_.Priority -eq 'Critical' }).Count
+$highCount = @($remediationSorted | Where-Object { $_.Priority -eq 'High' }).Count
+$controlsPct = if ($controlsRated.Count) { [math]::Round(100 * $controlsMet.Count / $controlsRated.Count) } else { 0 }
+$maturity = if ($controlsPct -lt 40) { 'Baseline' } elseif ($controlsPct -lt 60) { 'Evolving' } elseif ($controlsPct -lt 80) { 'Intermediate' } elseif ($controlsPct -lt 95) { 'Advanced' } else { 'Leading' }
+$verdict = if ($iocUrgentCount -gt 0 -or $critCount -gt 0 -or $ualEnabled -eq $false) {
+    @{ Label = 'Act now'; Class = 'bad'; Text = (Join-List (@($(if ($iocUrgentCount) { "$iocUrgentCount warning sign(s) of an intrusion need a same-day check" }), $(if ($critCount) { "$critCount Critical item(s) are due this week" }), $(if ($ualEnabled -eq $false) { 'activity logging is turned off, so sharing, downloads and mailbox changes are not being recorded' })) | Where-Object { $_ }) '; ') + '.' }
+} elseif ($highCount -gt 0 -or $controlsPct -lt 70 -or ($null -ne $scoreCurrent -and $scoreCurrent -lt $scoreTarget)) {
+    @{ Label = 'Needs attention'; Class = 'mid'; Text = "No warning signs of an intrusion and no Critical items. $(if ($highCount) { "$highCount High item(s) are due within 30 days. " })$controlsPct% of measured controls are in place$(if ($null -ne $scoreCurrent -and $scoreCurrent -lt $scoreTarget) { " and Secure Score is below the $TargetScorePercent% goal" })." }
+} else {
+    @{ Label = 'In good shape'; Class = 'good'; Text = "No warning signs of an intrusion, no Critical or High items, $controlsPct% of measured controls in place$(if ($null -ne $scoreCurrent) { ' and Secure Score at goal' }). Keep the monthly cadence and work the remaining Medium and Low items." }
+}
+$prevUsersSnap = Get-JsonProp $previous 'Users'; $prevDevSnap = Get-JsonProp $previous 'Devices'; $prevIocSnap = Get-JsonProp $previous 'Ioc'; $prevFindSnap = Get-JsonProp $previous 'Findings'; $prevShareSnap = Get-JsonProp $previous 'Sharing'
+$scoreDelta = if ($null -ne $scoreCurrent -and $previous -and $null -ne (Get-JsonProp $previous 'SecureScore')) { [math]::Round([double]$scoreCurrent - [double](Get-JsonProp $previous 'SecureScore'), 1) } else { $null }
+$trend = if (-not $previous) { @{ Label = 'Baseline'; Class = 'neutral'; Text = 'First report kept for this tenant: the baseline that next month is measured against.' } }
+         else {
+             $pos = $improvedCount + $resolvedCount; $neg = $regressedCount + $newCount
+             $tl = if ($pos -gt $neg) { 'Improving' } elseif ($neg -gt $pos) { 'Slipping' } else { 'Holding' }
+             @{ Label = $tl; Class = $(switch ($tl) { 'Improving' { 'good' } 'Slipping' { 'bad' } default { 'mid' } }); Text = "Since $(Get-JsonProp $previous 'Date'): $resolvedCount item(s) resolved and $improvedCount control(s) improved; $newCount new item(s) and $regressedCount control(s) regressed$(if ($null -ne $scoreDelta) { $(if ($scoreDelta -gt 0) { "; Secure Score up $scoreDelta points" } elseif ($scoreDelta -lt 0) { "; Secure Score down $([math]::Abs($scoreDelta)) points" } else { '; Secure Score unchanged' }) })." }
+         }
+# Scorecard: measurable, goal, actual, on/off track, movement since the last report
+function Get-Movement { param($Now, $Before, [switch]$HigherIsBetter)
+    if ($null -eq $Now -or $null -eq $Before -or -not $previous) { return $(if ($previous) { '' } else { 'baseline' }) }
+    $n = [double]$Now; $b = [double]$Before
+    if ($n -eq $b) { return 'no change' }
+    $better = if ($HigherIsBetter) { $n -gt $b } else { $n -lt $b }
+    return $(if ($better) { 'better (was ' } else { 'worse (was ' }) + "$b)"
+}
+$scorecardRows = @()
+function Add-Score { param([string]$Measurable, [string]$Goal, $Actual, [bool]$OnTrack, [string]$Movement, [string]$Issue, [bool]$Known = $true)
+    $script:scorecardRows += [ordered]@{ 'Measurable' = $Measurable; 'Goal' = $Goal; 'Actual' = $(if ($Known) { [string]$Actual } else { 'Not measured' }); 'Status' = $(if (-not $Known) { 'Not measured' } elseif ($OnTrack) { 'On track' } else { 'Off track' }); 'Since last report' = $Movement; '_issues' = $(if ($Known -and -not $OnTrack -and $Issue) { @{ 'Status' = $Issue } } else { $null }); '_tags' = $(if (-not $Known) { 'notmeasured' } elseif ($OnTrack) { 'ontrack' } else { 'offtrack' }) }
+}
+$script:scorecardRows = @()
+$prevControlsMet = $(if ($previous) { @((Get-JsonProp $previous 'Controls').PSObject.Properties | Where-Object { [string]$_.Value -match '^(Enabled|Enforced|Blocked|Yes|All enrolled|Restricted|Target met|Complete|Configured|Onboarded|None found)' }).Count } else { $null })
+Add-Score 'Security controls in place' '100%' "$controlsPct% ($($controlsMet.Count) of $($controlsRated.Count))" ($controlsPct -ge 90) (Get-Movement $controlsMet.Count $prevControlsMet -HigherIsBetter) 'secure-score'
+Add-Score 'Microsoft Secure Score' "$TargetScorePercent%" "$scorePct%" ($null -ne $scoreCurrent -and $scoreCurrent -ge $scoreTarget) (Get-Movement $scorePct (Get-JsonProp $previous 'SecureScorePct') -HigherIsBetter) 'secure-score' ($null -ne $scoreCurrent)
+Add-Score 'Warning signs of an intrusion needing a same-day check' '0' $iocUrgentCount ($iocUrgentCount -eq 0) (Get-Movement $iocUrgentCount (Get-JsonProp $prevIocSnap 'Urgent')) 'ioc-urgent' $iocCollected
+Add-Score 'High-priority items due within 30 days (Critical and High)' '0' $findCritHigh ($findCritHigh -eq 0) (Get-Movement $findCritHigh $(if ($prevFindSnap) { [int](Get-JsonProp $prevFindSnap 'Critical') + [int](Get-JsonProp $prevFindSnap 'High') } else { $null })) 'ioc-review'
+Add-Score 'Activity recording (audit log) turned on' 'Yes' $(if ($ualEnabled -eq $true) { 'Yes' } elseif ($ualEnabled -eq $false) { 'No' } else { 'Unknown' }) ($ualEnabled -eq $true) '' 'ual-off' ($null -ne $ualEnabled)
+Add-Score 'Staff accounts without a second sign-in factor (MFA)' '0' $noMfaCount ($noMfaCount -eq 0) (Get-Movement $noMfaCount (Get-JsonProp $prevUsersSnap 'NoMfa')) 'mfa-not-registered' ($null -ne $noMfaCount)
+Add-Score 'Staff using phishing-proof sign-in (passkeys)' '90%' "$passkeyPct%" ($null -ne $passkeyPct -and $passkeyPct -ge 90) (Get-Movement $passkeyPct (Get-JsonProp $prevUsersSnap 'PasskeyPct') -HigherIsBetter) 'passkey-not-started' ($null -ne $passkeyPct)
+Add-Score 'Accounts with full administrative control (Global Administrators)' '2 to 4' $gaCount ($gaCount -ge 2 -and $gaCount -le 4) (Get-Movement $gaCount (Get-JsonProp $prevUsersSnap 'GlobalAdmins')) 'ga-count'
+Add-Score "Unused staff accounts still enabled (no sign-in in $StaleDays days)" '0' $staleUserCount ($staleUserCount -eq 0) (Get-Movement $staleUserCount (Get-JsonProp $prevUsersSnap 'Stale')) 'user-stale' ($null -ne $staleUserCount)
+Add-Score 'Company computers outside central management (Intune)' '0' $notInIntuneCount ($notInIntuneCount -eq 0) (Get-Movement $notInIntuneCount (Get-JsonProp $prevDevSnap 'NotInIntune')) 'intune-coverage' (-not (Get-GraphFailure 'Intune managed devices'))
+Add-Score 'Files or calendars open to anyone on the internet' '0' ($shareAnyone + $anonLinkCount) (($shareAnyone + $anonLinkCount) -eq 0) (Get-Movement ($shareAnyone + $anonLinkCount) (Get-JsonProp $prevShareSnap 'Anyone')) 'share-anonymous' (-not ($SkipShareScan -and -not $ualCollected))
+Add-Score 'Email anti-spoofing protections (SPF, DKIM, DMARC)' 'All domains complete' (Join-List (@("SPF $spfStatus", "DKIM $dkimStatus", "DMARC $dmarcStatus")) ', ') ($spfStatus -eq 'Complete' -and $dkimStatus -eq 'Complete' -and $dmarcStatus -eq 'Complete') '' 'dmarc-missing' ($dnsAvailable -and $emailAuthRows.Count -gt 0)
+$scorecardRows = @($script:scorecardRows)
+$onTrack = @($scorecardRows | Where-Object { $_['Status'] -eq 'On track' }).Count; $measured = @($scorecardRows | Where-Object { $_['Status'] -ne 'Not measured' }).Count
+# Headlines: the news a board member would repeat, bad first
+$headlines = @()
+if ($iocUrgentCount) { $headlines += @{ Kind = 'bad'; Text = "$iocUrgentCount warning sign(s) of an intrusion need a same-day check (section 2)." } }
+if ($ualEnabled -eq $false) { $headlines += @{ Kind = 'bad'; Text = 'Activity recording is turned off: nobody can see who shared, downloaded or changed what, and an intrusion could not be investigated.' } }
+if ($critCount) { $headlines += @{ Kind = 'bad'; Text = "$critCount Critical item(s) are due this week: $(Join-List (@($remediationSorted | Where-Object { $_.Priority -eq 'Critical' } | Select-Object -First 3 | ForEach-Object { $_.Finding })) ', ')$(if ($critCount -gt 3) { ' and more' })." } }
+if ($gaNoMfa.Count) { $headlines += @{ Kind = 'bad'; Text = "$($gaNoMfa.Count) account(s) with full administrative control have no second sign-in factor (MFA)." } }
+if (($shareAnyone + $anonLinkCount) -gt 0) { $headlines += @{ Kind = 'bad'; Text = "$($shareAnyone + $anonLinkCount) item(s) are open to anyone on the internet." } }
+if ($previous -and $resolvedCount) { $headlines += @{ Kind = 'good'; Text = "$resolvedCount item(s) fixed since the last report." } }
+if ($null -ne $scoreDelta -and $scoreDelta -gt 0) { $headlines += @{ Kind = 'good'; Text = "Secure Score up $scoreDelta points to $scorePct%." } }
+if ($iocCollected -and $iocUrgentCount -eq 0) { $headlines += @{ Kind = 'good'; Text = "No urgent warning sign of an intrusion in the last $AuditDays days." } }
+if ($mfaStatus -like 'Enforced*') { $headlines += @{ Kind = 'good'; Text = 'Every sign-in requires a second factor (MFA).' } }
+if ($legacyStatus -like 'Blocked*') { $headlines += @{ Kind = 'good'; Text = 'Older, less secure sign-in methods are blocked.' } }
+if ($dmarcStatus -eq 'Complete') { $headlines += @{ Kind = 'good'; Text = 'Every email domain is protected against impersonation (DMARC).' } }
+if ($null -ne $passkeyPct -and $passkeyPct -ge 90) { $headlines += @{ Kind = 'good'; Text = "$passkeyPct% of staff use phishing-proof sign-in (passkeys)." } }
+if ($previous -and $regressedCount) { $headlines += @{ Kind = 'bad'; Text = "$regressedCount control(s) regressed since the last report." } }
+$headlines = @(@($headlines | Where-Object { $_.Kind -eq 'bad' } | Select-Object -First 4) + @($headlines | Where-Object { $_.Kind -eq 'good' } | Select-Object -First 3))
+# Repeat findings: open in this and at least two earlier reports
+$priorSnaps = @($history | Where-Object { [string](Get-JsonProp $_ 'Date') -ne $snapshot.Date })
+$repeatRows = @()
+if ($priorSnaps.Count -ge 2) {
+    foreach ($fnd in $remediationSorted) {
+        $seen = @($priorSnaps | Where-Object { @(Get-JsonProp $_ 'FindingNames') -contains $fnd.Finding })
+        if ($seen.Count -ge 2) { $repeatRows += [ordered]@{ 'Finding' = $fnd.Finding; 'Priority' = $fnd.Priority; 'Open in reports' = $seen.Count + 1; 'First seen' = ([string](Get-JsonProp $seen[0] 'Date')).Substring(0, 10); 'Owner' = $(if ($fnd.Playbook) { [string]$fnd.Playbook.Owner } else { 'IT provider / MSP' }); '_issues' = @{ 'Open in reports' = 'repeat-finding' }; '_links' = @{ 'Finding' = "#rem-$($fnd.Ref)" } } }
+    }
+}
+$repeatRows = @($repeatRows | Sort-Object { -[int]$_['Open in reports'] } | Select-Object -First 15)
+if ($repeatRows.Count) { $headlines = @(@(@{ Kind = 'bad'; Text = "$($repeatRows.Count) finding(s) have been open for three or more reports." }) + $headlines) }
+# Rocks: 90-day objectives that group the findings into business outcomes
+$RockThemes = @(
+    @{ Rock = 'Licensing in place';             Objective = 'The licences needed for the controls below are approved and assigned';                                  Match = '(?i)not licensed' }
+    @{ Rock = 'Every sign-in protected';        Objective = 'MFA enforced for all users, legacy authentication blocked, administrators on phishing-resistant MFA, no stale accounts'; Match = '(?i)MFA|multifactor|multi-factor|legacy|authenticat|passkey|passwordless|security defaults|Temporary Access Pass|password|stale|sign-in|self-service|SSPR' }
+    @{ Rock = 'Administration and apps locked down'; Objective = 'Two to four Global Administrators, user consent restricted, no unknown or risky applications';      Match = '(?i)global admin|administrator|consent|application|app registration|apps|role|privileged|PIM' }
+    @{ Rock = 'Email protected';                Objective = 'SPF, DKIM and DMARC enforced, forwarding blocked, Defender for Office 365 presets on';                  Match = '(?i)SPF|DKIM|DMARC|forward|phish|safe links|safe attachments|spam|malware|impersonat|mail|Defender for Office|quarantine|spoof' }
+    @{ Rock = 'Every device managed';           Objective = 'All computers and phones enrolled in Intune, compliant, encrypted and protected by Defender for Endpoint'; Match = '(?i)Intune|device|compliance|endpoint|BitLocker|encrypt|Defender for Endpoint|join' }
+    @{ Rock = 'Data stays where it belongs';    Objective = 'No Anyone links, guests and external sharing limited to approved partners, Teams and SharePoint access governed'; Match = '(?i)shar|guest|Teams|SharePoint|OneDrive|external|anonymous|anyone|open to|link' }
+    @{ Rock = 'See and respond';                Objective = 'Audit logging on, indications of compromise reviewed every month, risky sign-ins and alerts handled';    Match = '(?i)audit|logging|compromise|risk|conceal|report|alert|Secure Score' }
+)
+function Get-RockFor { param([string]$Finding) foreach ($rt in $RockThemes) { if ($Finding -match $rt.Match) { return $rt.Rock } } ; return 'See and respond' }
+$prevNames = @(if ($previous) { Get-JsonProp $previous 'FindingNames' } else { @() })
+$rockRows = @()
+foreach ($rt in $RockThemes) {
+    $open = @($remediationSorted | Where-Object { (Get-RockFor $_.Finding) -eq $rt.Rock })
+    $prevOpen = @($prevNames | Where-Object { $_ -and (Get-RockFor $_) -eq $rt.Rock }).Count
+    if ($open.Count -eq 0 -and $prevOpen -eq 0) { continue }
+    $owners = @($open | ForEach-Object { if ($_.Playbook) { ([string]$_.Playbook.Owner -split ';')[0] } else { 'IT provider / MSP' } } | Group-Object | Sort-Object Count -Descending | Select-Object -First 1 | ForEach-Object { $_.Name })
+    $urgentIn = @($open | Where-Object { $_.Priority -in @('Critical', 'High') }).Count
+    $status = if ($open.Count -eq 0) { 'Done' } elseif (-not $previous) { 'Not started' } elseif ($open.Count -lt $prevOpen) { 'On track' } elseif ($open.Count -gt $prevOpen) { 'Off track' } else { 'Not started' }
+    $due = if ($open.Count -eq 0) { 'Complete' } elseif ($urgentIn) { $ReportDate.AddDays(30).ToString('MMMM d, yyyy') } elseif (@($open | Where-Object { $_.Priority -eq 'Medium' }).Count) { $ReportDate.AddDays(90).ToString('MMMM d, yyyy') } else { $ReportDate.AddDays(365).ToString('MMMM d, yyyy') }
+    $rockRows += [ordered]@{ 'Rock (90-day objective)' = $rt.Rock; 'Outcome' = $rt.Objective; 'Owner' = $(if ($owners) { $owners[0] } else { '' }); 'Open items' = "$($open.Count)$(if ($urgentIn) { " ($urgentIn Critical/High)" })"; 'Due' = $due; 'Status' = $status; '_tags' = $status.ToLower().Replace(' ', '') }
+}
+$rockRows = @($rockRows)
+# Issues list: what the committee must decide or unblock (EOS: identify, discuss, solve)
+$PolicyDecisionControls = @('Teams guest and external access', 'SharePoint and OneDrive external sharing', 'User consent to applications', 'Users restricted from joining devices to Entra ID', 'Automatic email forwarding outside the tenant', 'Phishing-resistant MFA (passkeys) rollout')
+$issueRows = @()
+foreach ($fnd in $remediationSorted) {
+    $isLic = ($fnd.Finding -match '(?i)not licensed') -or ($fnd.Playbook -and ([string]$fnd.Playbook.Owner) -match '(?i)committee|licen|budget')
+    $isPol = $PolicyDecisionControls -contains $fnd.Finding
+    if ($isLic -or $isPol) { $issueRows += [ordered]@{ 'Issue' = $fnd.Finding; 'Type' = $(if ($isLic) { 'Licence / budget decision' } else { 'Policy decision' }); 'What the committee is asked to decide' = ([string]$fnd.Action -split '(?<=\.)\s+')[0]; 'Who' = "IT committee decides; $(if ($fnd.Playbook) { ([string]$fnd.Playbook.Owner -split ';')[0] } else { 'IT provider / MSP' }) implements"; 'Phase' = $fnd.Phase; '_links' = @{ 'Issue' = "#rem-$($fnd.Ref)" } } }
+}
+foreach ($rr in $repeatRows) { $issueRows += [ordered]@{ 'Issue' = $rr['Finding']; 'Type' = 'Repeat finding'; 'What the committee is asked to decide' = "Open for $($rr['Open in reports']) reports since $($rr['First seen']): name the owner and date, and remove what is blocking it."; 'Who' = $rr['Owner']; 'Phase' = ''; '_links' = $rr['_links'] } }
+if ($ualEnabled -eq $false) { $issueRows += [ordered]@{ 'Issue' = 'Activity logging is off'; 'Type' = 'Coverage gap'; 'What the committee is asked to decide' = 'Direct the IT provider to turn on the unified audit log this week; until then intrusion and data-leak checks cannot be completed.'; 'Who' = 'IT committee directs; IT provider / MSP implements'; 'Phase' = 'Now: this week'; '_links' = @{ 'Issue' = '#ioc' } } }
+if ($reportConcealedNote) { $issueRows += [ordered]@{ 'Issue' = 'Usage report names are concealed'; 'Type' = 'Coverage gap'; 'What the committee is asked to decide' = 'Approve clearing the report privacy setting so OneDrive, site and team owners are named.'; 'Who' = 'IT committee approves; IT provider / MSP implements'; 'Phase' = 'Now: this week'; '_links' = @{ 'Issue' = '#sharepoint' } } }
+if ($shareSitesDenied -gt 0) { $issueRows += [ordered]@{ 'Issue' = "$shareSitesDenied site(s) could not be read by the account that ran the report"; 'Type' = 'Coverage gap'; 'What the committee is asked to decide' = 'Run the report as a SharePoint administrator with site access, or accept that sharing on those sites is unverified.'; 'Who' = 'Security officer'; 'Phase' = 'Next 30 days'; '_links' = @{ 'Issue' = '#sharing' } } }
+if ($script:HasEntraP1 -eq $false) { $issueRows += [ordered]@{ 'Issue' = 'Entra ID P1 not licensed'; 'Type' = 'Coverage gap'; 'What the committee is asked to decide' = 'Without P1 there is no Conditional Access, sign-in log or risk policy; decide whether to license it (included in Business Premium).'; 'Who' = 'IT committee'; 'Phase' = 'Next 90 days'; '_links' = @{ 'Issue' = '#remediation' } } }
+$issueRows = @($issueRows)
+# Plan by phase and the GLBA board-report mapping
+$PhaseDays = @{ 'Now: this week' = 7; 'Next 30 days' = 30; 'Next 90 days' = 90; 'Next 12 months and ongoing' = 365 }
+$planRows = @($PhaseOrder | ForEach-Object { $ph = $_; $items = @($remediationSorted | Where-Object { $_.Phase -eq $ph }); [ordered]@{ 'Phase' = $ph; 'Open items' = $items.Count; 'Target date' = $ReportDate.AddDays($PhaseDays[$ph]).ToString('MMMM d, yyyy'); 'Owners' = (Join-List (@($items | ForEach-Object { if ($_.Playbook) { ([string]$_.Playbook.Owner -split ';')[0] } else { 'IT provider / MSP' } }) | Select-Object -Unique -First 3) '; '); 'Closed when' = 'the next monthly report lists the item as resolved' } })
+$glbaRows = @(
+    [ordered]@{ 'Board report element (GLBA Interagency Guidelines)' = 'Overall status of the information security program and compliance'; 'Where it is in this report' = "This page: the verdict, scorecard, rocks and trend (Microsoft 365 scope)" },
+    [ordered]@{ 'Board report element (GLBA Interagency Guidelines)' = 'Risk assessment'; 'Where it is in this report' = 'Section 2 (possible indications of compromise), section 3 (control gaps) and section 19 (who can reach what)' },
+    [ordered]@{ 'Board report element (GLBA Interagency Guidelines)' = 'Risk management and control decisions'; 'Where it is in this report' = 'Issues list on this page; section 4 roadmap with owners, effort and target dates' },
+    [ordered]@{ 'Board report element (GLBA Interagency Guidelines)' = 'Service provider arrangements'; 'Where it is in this report' = 'Section 11 (applications with access to data), section 19 (external access); tickets go to the IT provider / MSP with a "done when" test' },
+    [ordered]@{ 'Board report element (GLBA Interagency Guidelines)' = 'Results of testing'; 'Where it is in this report' = 'Sections 3 and 5: every control measured monthly against the live tenant and mapped to NIST, CIS and FFIEC / NCUA' },
+    [ordered]@{ 'Board report element (GLBA Interagency Guidelines)' = 'Security breaches or violations and management responses'; 'Where it is in this report' = 'Section 2, with the outcome of each urgent item recorded by the security officer' },
+    [ordered]@{ 'Board report element (GLBA Interagency Guidelines)' = 'Recommendations for changes'; 'Where it is in this report' = 'Section 4 remediation plan; rocks and issues on this page' }
+)
+
 # ---- Framework alignment table and governance figures for the executive summary
 $frameworkRows = @(); $fwMet = 0; $fwRated = 0
 foreach ($row in $script:summaryRows) {
@@ -3761,20 +3899,58 @@ $html = @"
 <main>
 <div class='pager'><button type='button' id='prevSec' title='Previous section'>&larr; Previous</button><button type='button' id='nextSec' title='Next section'>Next &rarr;</button><span class='title' id='pagerTitle'></span><span class='pos' id='pagerPos'></span><button type='button' id='viewToggle' title='Switch between one section per page and the whole report on one page'>Show all sections</button></div>
 <section id='overview'><h2>1. Executive Summary</h2>
-<p class='exec'>$execNarrative</p>
-<p class='legend'><span class='i'>i</span> marks a configuration issue anywhere in this report. Click the icon to read why it matters and what to do about it.</p>
-<div class='howto'><b>How to use this report.</b><ul>
-<li><b>Board:</b> the paragraph above, the tiles and "Progress since last report" answer three questions: are we secure, are we improving, is there a plan.</li>
-<li><b>IT committee:</b> add the Roadmap in section 4 and the "Governance and review" table below; approve the phases, the owners, and any licence or budget decisions.</li>
-<li><b>Security officer and IT provider / MSP:</b> work section 2 (review these now) today, then section 4 from the top. Every finding has step-by-step instructions, an owner and an effort estimate, and copies straight into a ticket.</li>
-<li><b>Auditors:</b> section 3 is the control test, section 5 maps each control to NIST CSF 2.0, NIST SP 800-63B, the CIS Microsoft 365 Benchmark, CIS Controls v8 and FFIEC / NCUA expectations, and sections 6 to 18 hold the evidence behind every status.</li>
-<li><b>Examiners:</b> the monthly history, "Progress since last report" and the sign-off block show that the institution measures, reviews, plans and improves its Microsoft 365 controls.</li></ul></div>
+<p class='audience'>Prepared for the board and IT committee of $(HtmlEnc $ClientLabel) from a read-only review of the Microsoft 365 environment on $($ReportDate.ToString('MMMM d, yyyy')). One page answers three questions: are we secure, are we improving, what needs a decision. The detail behind every number follows for the security officer, the IT provider, auditors and examiners.</p>
+<div class='verdict $($verdict.Class)'><div class='vlabel'>Overall</div><div class='vword'>$($verdict.Label)</div><p>$($verdict.Text)</p>
+<div class='chips'><span class='chip $($trend.Class)'>Trend: $($trend.Label)</span><span class='chip $(if (-not $iocCollected) { 'mid' } elseif ($iocUrgentCount) { 'bad' } else { 'good' })'>Intrusion check: $(if (-not $iocCollected) { 'not collected' } elseif ($iocUrgentCount) { "$iocUrgentCount urgent" } else { 'nothing urgent' })</span><span class='chip $(if ($measured -and $onTrack -eq $measured) { 'good' } elseif ($measured -and $onTrack * 2 -ge $measured) { 'mid' } else { 'bad' })'>Scorecard: $onTrack of $measured on track</span><span class='chip neutral'>Maturity (indicative): $maturity</span><span class='chip neutral'>Next report: $($ReportDate.AddDays(30).ToString('MMMM d, yyyy'))</span></div></div>
 <div class='kpis'>$($kpiHtml.ToString())</div>
-<h3>Top priorities</h3>
-<div class='exec'>$(if ($remediationSorted.Count) { '<ol>' + ((@($remediationSorted | Select-Object -First 5) | ForEach-Object { "<li><b>$(HtmlEnc $_.Priority):</b> $(HtmlEnc $_.Finding)$(if ($_.Points) { " ($($_.Points) Secure Score points)" })</li>" }) -join '') + '</ol>' } else { "<p class='empty'>No open findings.</p>" }) <p class='meta'>Full list with recommended actions in <a href='#remediation'>section 3, Remediation Plan</a>.</p></div>
-<h3 id='progress'>Progress since last report</h3>
-$progressHtml
+<div class='eos'>
+<div class='eos-col'>
+<h3>Headlines</h3>
+<ul class='headlines'>$(if ($headlines.Count) { (@($headlines | ForEach-Object { "<li class='$($_.Kind)'><span class='dot'></span>$(HtmlEnc $_.Text)</li>" }) -join '') } else { "<li class='good'><span class='dot'></span>Nothing to report beyond the scorecard.</li>" })</ul>
+</div>
+<div class='eos-col'>
+<h3>Top priorities (next 30 days)</h3>
+$(if ($remediationSorted.Count) { "<ol class='prio'>" + ((@($remediationSorted | Select-Object -First 5) | ForEach-Object { "<li><span class='badge $($_.Priority)'>$(HtmlEnc $_.Priority)</span><div><a href='#rem-$($_.Ref)'>$(HtmlEnc $_.Finding)</a><br><span class='who'>$(if ($_.Playbook) { "$(HtmlEnc (([string]$_.Playbook.Owner -split ';')[0])) &middot; $(HtmlEnc $_.Playbook.Effort)" } else { 'IT provider / MSP' }) &middot; $(HtmlEnc $_.Phase)</span></div></li>" }) -join '') + '</ol>' } else { "<p class='empty'>Nothing is due. Every measured control is in place.</p>" })
+</div>
+</div>
+<h3>Scorecard</h3>
+<p class='meta'>The measurables the committee tracks every month, each with its goal. Off track means work is needed; the (i) icon says what and why.</p>
+$(New-HtmlTable $scorecardRows -Id 'tbl-scorecard' -Filters @(@{ Label = 'Off track'; Tag = 'offtrack' }, @{ Label = 'On track'; Tag = 'ontrack' }, @{ Label = 'Not measured'; Tag = 'notmeasured' }) -Columns 'Measurable','Goal','Actual','Status','Since last report' -EmptyText 'No measurables.')
+<h3>Rocks: 90-day objectives</h3>
+<p class='meta'>The findings grouped into business outcomes, each with an owner, a due date and a status. Done means no open item remains; On track means fewer open items than last month; Off track means more.</p>
+$(New-HtmlTable $rockRows -Columns 'Rock (90-day objective)','Outcome','Owner','Open items','Due','Status' -EmptyText 'Every objective is complete.')
+<h3>Issues list</h3>
+<p class='meta'>Items that need a committee or board decision, or that block the work: licences and budget, policy choices, repeat findings and coverage gaps. Discuss, decide, minute.</p>
+$(New-HtmlTable $issueRows -Columns 'Issue','Type','What the committee is asked to decide','Who','Phase' -EmptyText 'No open issues for the committee; the remaining work is for the IT provider.')
+<h3 id='progress'>Progress</h3>
+<p class='meta'>$(HtmlEnc $trend.Text)</p>
 <div class='charts'><div class='chart'>$scoreTrend</div><div class='chart'>$findingTrend</div><div class='chart'>$passkeyTrend</div></div>
+<details class='more'><summary>Show every change since the last report</summary>
+$progressHtml
+</details>
+$(if ($repeatRows.Count) { "<details class='more' open><summary>Repeat findings: open for three or more reports</summary><p class='meta'>Examiners treat a finding that stays open across review cycles as a program weakness, not just a technical gap. Each needs an owner, a date and a reason in the minutes.</p>" + (New-HtmlTable $repeatRows -Columns 'Finding','Priority','Open in reports','First seen','Owner' -EmptyText '') + '</details>' })
+<details class='more'><summary>More figures: users, devices, MFA</summary><div class='kpis'>$($kpiMoreHtml.ToString())</div></details>
+<p class='legend'><span class='i'>i</span> marks a configuration issue anywhere in this report. Click the icon to read why it matters and what to do about it.</p>
+<hr class='divider'>
+<h3>For the IT committee, auditors and examiners</h3>
+<details class='more' open><summary>The plan by phase</summary>
+$(New-HtmlTable $planRows -Columns 'Phase','Open items','Target date','Owners','Closed when' -EmptyText 'No findings.')
+<p class='meta'>Goal: every item closed and verified by this report, then a monthly run to catch drift and indications of compromise, a quarterly committee review and an annual board summary. The script changes nothing in the tenant.</p>
+</details>
+<details class='more'><summary>How this report serves the annual GLBA board report and the IT examination</summary>
+<p class='meta'>The Interagency Guidelines Establishing Information Security Standards (12 CFR Part 30 / 364 / 208 App. B, D-2; NCUA Part 748 App. A) require management to report to the board at least annually on the overall status of the information security program, covering risk assessment, risk management and control decisions, service provider arrangements, results of testing, security breaches and management responses, and recommendations for changes. This report supplies the Microsoft 365 portion of that evidence each month; core systems, vendors outside Microsoft 365, physical security and the written program remain part of the wider report.</p>
+$(New-HtmlTable $glbaRows -Columns 'Board report element (GLBA Interagency Guidelines)','Where it is in this report')
+<p class='meta'>What examiners look for in board reporting, and where it is here: evidence the board was told (this page, minuted with the sign-off below); decisions the board made (the issues list); findings tracked with owners and dates (rocks, the plan by phase and section 4); closure proven rather than asserted (next report's progress); trends across cycles (the charts); and no repeat findings (the repeat-findings table).</p>
+</details>
+<details class='more'><summary>Summary in full and how to read this report by role</summary>
+<p class='exec'>$execNarrative</p>
+<div class='howto'><b>How to use this report.</b><ul>
+<li><b>Board:</b> the verdict, the headlines and the scorecard answer three questions: are we secure, are we improving, is there a plan. The sign-off line records that the board was told.</li>
+<li><b>IT committee:</b> the rocks, the issues list and the plan by phase are the agenda; approve owners, dates, licences and policy choices and minute them.</li>
+<li><b>Security officer and IT provider / MSP:</b> work section 2 (review these now) today, then section 4 from the top. Every finding has step-by-step instructions, an owner and an effort estimate, and copies straight into a ticket.</li>
+<li><b>Auditors:</b> section 3 is the control test, section 5 maps each control to NIST CSF 2.0, NIST SP 800-63B, the CIS Microsoft 365 Benchmark, CIS Controls v8 and FFIEC / NCUA expectations, and sections 6 to 19 hold the evidence behind every status.</li>
+<li><b>Examiners:</b> the monthly history, the progress section, the repeat-findings table and the sign-off block show that the institution measures, reviews, plans and improves its Microsoft 365 controls.</li></ul></div>
+</details>
 <div class='privacy'><b>Privacy.</b> This report was generated locally by the free Audit Hat M365 Audit Evidence script ($brandLink) on the computer of the signed-in user. The script reads the tenant with that user's own permissions and writes only to the local output folder. No data is sent to Audit Hat or any third party.</div>
 <h3>Governance and review</h3>
 $(New-KvTable $governanceKv)
@@ -3975,7 +4151,7 @@ $shareSectionHtml
       document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); document.body.removeChild(a); },500); flash(csv,'Downloaded');
     });
   }
-  window.addEventListener('beforeprint', function(){ document.querySelectorAll('details.steps').forEach(function(d){ d.setAttribute('open',''); }); });
+  window.addEventListener('beforeprint', function(){ document.querySelectorAll('details.steps, details.more').forEach(function(d){ d.setAttribute('open',''); }); });
   // "Show all" dialogs for long cells (permissions): the full content sits hidden next to the button
   var moreModal=document.getElementById('moreModal'), moreBody=document.getElementById('moreBody'), moreTitle=document.getElementById('moreTitle'), moreClose=document.getElementById('moreClose');
   function closeMore(){ if(!moreModal||moreModal.hasAttribute('hidden')) return; moreModal.setAttribute('hidden',''); document.body.classList.remove('noscroll'); }
