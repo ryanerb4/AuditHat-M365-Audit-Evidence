@@ -16,7 +16,7 @@
     9. Conditional Access            10. Authentication Methods   11. Enterprise Applications
    12. Application Consent Audit Events                           13. Users
    14. Privileged Users              15. Exchange Online          16. Defender and Email Protection
-   17. Microsoft Teams               18. SharePoint and OneDrive
+   17. Microsoft Teams               18. SharePoint and OneDrive  19. Sharing and Access
   README.md documents every section; docs/DEVELOPMENT.md explains the code layout for contributors.
 
   Notes on "who approved and when":
@@ -113,7 +113,8 @@ param(
     [switch]$NoHistory,            # do not read or write the per-tenant history file used for the progress charts and change log
     [switch]$NoOpen,               # do not open the finished report in the default browser
     [switch]$SkipAuditLog,         # skip the unified audit log search (sharing, downloads, mailbox rule changes) used for indications of compromise
-    [switch]$TestPermissions       # sign in, probe every API and permission the report uses, print what is missing, and exit without collecting
+    [switch]$TestPermissions,      # sign in, probe every API and permission the report uses, print what is missing, and exit without collecting
+    [switch]$SkipShareScan         # skip the per-item sharing scan of SharePoint sites and OneDrive (section 19 then shows Teams, Exchange and guest access only)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -171,7 +172,8 @@ $Scopes = @(
     'IdentityRiskEvent.Read.All',      # Entra ID Protection risk detections (needs Entra ID P2)
     'Reports.Read.All',                # Teams, SharePoint and OneDrive usage reports (site and team inventories)
     'SharePointTenantSettings.Read.All', # SharePoint and OneDrive tenant sharing settings
-    'TeamSettings.Read.All'            # per-team settings (archived, guest settings)
+    'TeamSettings.Read.All',           # per-team settings (archived, guest settings)
+    'Sites.Read.All'                   # sharing links and permissions on SharePoint and OneDrive items the signed-in account can read
 )
 
 # --- Prerequisite check and auto-install (current user scope, no admin rights required) -------
@@ -682,6 +684,13 @@ $IssueCatalog = @{
     'ioc-audit-rule-change' = @{ Title = 'Mailbox rule, forwarding or permission change recorded'; Why = 'The audit log shows who created a rule that forwards, deletes or hides mail, or who granted mailbox access, from which address and client, including rules that were created and later removed.'; Fix = 'Compare the actor, IP address and client with the mailbox owner''s normal pattern; if it was not the owner from a known device, treat the mailbox as compromised.' }
     'ioc-url-click'        = @{ Title = 'User clicked a malicious link';                      Why = 'Safe Links blocked or warned about the destination; a user who clicked through may have typed their password into a phishing page.'; Fix = 'Contact the user, reset the password if they entered it, revoke sessions and check for new MFA methods and inbox rules. Use the event for awareness training.' }
     'ual-off'              = @{ Title = 'Unified audit log is turned off';                     Why = 'With audit logging off, Microsoft 365 keeps no record of who shared, downloaded, forwarded or changed anything. A compromise cannot be investigated or scoped, and examiners have no activity evidence. CIS 3.1.1 and every regulator expect it on.'; Fix = 'Purview portal > Audit > Start recording user and admin activity (or Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true). Recording starts within hours; set retention to at least 180 days, ideally one year.' }
+    'share-anonymous'      = @{ Title = 'Open to anyone on the internet';                      Why = 'An Anyone link or anonymous calendar permission needs no sign-in and leaves no record of who opened it. Whoever holds the link, including anyone it was forwarded to, has the data.'; Fix = 'Open the item (link in the row), Manage access, remove the Anyone link; then set the tenant and site sharing level so Anyone links cannot be created. For calendars set the Anonymous permission to None.' }
+    'share-org'            = @{ Title = 'Open to the whole organization';                     Why = 'A "People in your organization" link or a public team lets every account in the tenant, including guests who have signed in, read the content. Board packs, HR and lending files should not be reachable by every teller and vendor account.'; Fix = 'Replace organization-wide links with specific people, make teams Private, and set the default link type to Specific people.' }
+    'share-external'       = @{ Title = 'Shared with people outside the organization';         Why = 'Guests and external recipients keep access until someone removes it; most institutions have no process for that. Each one is a route for data to leave.'; Fix = 'Confirm each external person still needs access; remove the rest. Set guest access to expire and restrict sharing to approved domains.' }
+    'share-outside-team'   = @{ Title = 'Shared with an insider outside the owning team';      Why = 'Someone who is not a member of the team or site has been given the file directly. That bypasses the team membership the owners manage, and it is how data crosses departments unnoticed.'; Fix = 'Ask the owner whether the person should be a team member instead, or remove the direct permission. Review cross-department grants in section 19 with department heads.' }
+    'calendar-default-open' = @{ Title = 'Calendar readable by everyone in the organization';  Why = 'With the Default permission above Free/Busy, every account can read meeting subjects, locations and attendees, which reveals customer meetings, exams and deals.'; Fix = 'Set the Default calendar permission to AvailabilityOnly (free/busy) or LimitedDetails for the mailboxes listed; share full details only with named people.' }
+    'calendar-anonymous'   = @{ Title = 'Calendar readable by anonymous users';               Why = 'Anyone with the published calendar link can read it without signing in.'; Fix = 'Set the Anonymous calendar permission to None and turn off anonymous calendar publishing in the sharing policy.' }
+    'sharing-policy-external' = @{ Title = 'Calendar sharing policy allows external or anonymous sharing'; Why = 'The Exchange sharing policy decides whether users can publish or share calendar details outside the organization.'; Fix = 'In the Exchange admin center sharing policy, limit external calendar sharing to free/busy for approved domains and remove Anonymous publishing.' }
     'guest'                = @{ Title = 'Guest account';                                     Why = 'Guests are external people with access to shared content; stale or unreviewed guests are a common data-leak path.'; Fix = 'Review guests periodically, remove those no longer needed, and consider access reviews or restricting guest invitations.' }
 }
 function New-InfoIcon {
@@ -1642,6 +1651,7 @@ $suspiciousRuleRows = @(); $fullAccessRows = @(); $sendAsRows = @(); $recentTran
 $ualCollected = $false; $ualNote = 'Unified audit log not searched (Exchange Online was not collected).'; $ualEnabled = $null; $sharingRows = @(); $anonLinkCount = 0; $extShareEventCount = 0
 $downloadRows = @(); $massDownloadUrgent = 0; $massDownloadReview = 0; $downloadTotal = 0; $dlBy = @{}; $dlMedian = 0; $downloadDays = [Math]::Min($AuditDays, 7); $MassDownloadThreshold = 500
 $auditRuleRows = @(); $auditRuleDanger = 0; $urlClickRows = @(); $urlClickedThrough = 0; $urlBlocked = 0; $urlClicksCollected = $false
+$calendarShareRows = @(); $sharingPolicyText = ''; $sharedMailboxCount = 0
 if (-not $SkipExchange) {
     if (Get-Module -ListAvailable ExchangeOnlineManagement) {
         try {
@@ -1713,6 +1723,12 @@ if (-not $SkipExchange) {
                                 $suspiciousRuleRows += [ordered]@{ 'Mailbox' = $mb.PrimarySmtpAddress; 'Rule' = $r.Name; 'Enabled' = $r.Enabled; 'Why it is suspicious' = (Join-List $why '; '); 'Conditions' = $(if ($conds.Count) { Join-List $conds '; ' } else { 'All messages' }); '_issues' = @{ 'Why it is suspicious' = 'ioc-inbox-rule-hide' }; '_tags' = $(if ($r.Enabled) { 'enabled' } else { 'disabled' }) }
                             }
                         }
+                        # Sharing and access: calendar folder open to everyone in the organization (Default) or to anonymous users
+                        try {
+                            foreach ($cp in @(Get-MailboxFolderPermission -Identity "$($mb.PrimarySmtpAddress):\Calendar" -ErrorAction Stop | Where-Object { ([string]$_.User) -in @('Default', 'Anonymous') -and ([string]$_.AccessRights) -notmatch '^(None|AvailabilityOnly)$' })) {
+                                $calendarShareRows += [ordered]@{ 'Mailbox' = $mb.PrimarySmtpAddress; 'Level' = [string]$cp.User; 'Access rights' = (Join-List (@($cp.AccessRights) | ForEach-Object { [string]$_ })) }
+                            }
+                        } catch { Write-Verbose "Calendar permissions not readable for $($mb.PrimarySmtpAddress): $($_.Exception.Message)" }
                         # Indications of compromise: Full Access delegates that are not the owner or the system
                         foreach ($perm in @(Get-MailboxPermission -Identity $mb.Identity -ErrorAction Stop | Where-Object { -not $_.IsInherited -and $_.Deny -ne $true -and ([string]$_.User) -notmatch '^(NT AUTHORITY|S-1-5)' -and ((@($_.AccessRights) | ForEach-Object { [string]$_ }) -join ',') -match 'FullAccess' })) {
                             $fullAccessRows += [ordered]@{ 'Mailbox' = $mb.PrimarySmtpAddress; 'Mailbox type' = [string]$mb.RecipientTypeDetails; 'Delegate (Full Access)' = [string]$perm.User; 'Rights' = (Join-List (@($perm.AccessRights) | ForEach-Object { [string]$_ })); '_issues' = @{ 'Delegate (Full Access)' = 'ioc-delegate' }; '_tags' = $(if ([string]$mb.RecipientTypeDetails -eq 'SharedMailbox') { 'shared' } else { 'user' }) }
@@ -1773,6 +1789,9 @@ if (-not $SkipExchange) {
             $sendAsRows = @(Invoke-ExoSafe { Get-RecipientPermission -ResultSize Unlimited } 'Send As permissions' | Where-Object { $_ -and ([string]$_.Trustee) -notmatch '^(NT AUTHORITY|S-1-5)' -and ((@($_.AccessRights) | ForEach-Object { [string]$_ }) -join ',') -match 'SendAs' -and ([string]$_.AccessControlType) -ne 'Deny' } | ForEach-Object { [ordered]@{ 'Mailbox' = [string]$_.Identity; 'Trustee (can send as)' = [string]$_.Trustee; '_issues' = @{ 'Trustee (can send as)' = 'ioc-sendas' } } })
             $recentTransportRows = @($transportRules | Where-Object { $_.WhenChanged -and ([datetime]$_.WhenChanged) -ge (Get-Date).AddDays(-$AuditDays) } | ForEach-Object { [ordered]@{ 'Rule' = $_.Name; 'State' = [string]$_.State; 'Changed' = (Format-DateText $_.WhenChanged); 'Created' = (Format-DateText $_.WhenCreated); 'Actions' = (Join-List (@($_.Actions) | ForEach-Object { [string]$_ }) '; '); '_issues' = @{ 'Changed' = 'ioc-transport-change' } } })
             $mailboxAuditDisabled = [bool]$orgConfig.AuditDisabled
+            $sharedMailboxCount = @($mailboxes | Where-Object { [string]$_.RecipientTypeDetails -eq 'SharedMailbox' }).Count
+            $sharingPolicies = Invoke-ExoSafe { Get-SharingPolicy } 'sharing policies'
+            $sharingPolicyText = Join-List ($sharingPolicies | ForEach-Object { "$($_.Name) ($(if ($_.Enabled) { 'enabled' } else { 'disabled' })): $(Join-List (@($_.Domains) | ForEach-Object { [string]$_ }) ', ')" }) ' | '
 
             # ---- Unified audit log (Microsoft Purview Audit): sharing, mass downloads, mailbox rule and forwarding changes
             $ualConfig = (Invoke-ExoSafe { Get-AdminAuditLogConfig } 'audit log configuration') | Select-Object -First 1
@@ -2187,6 +2206,7 @@ Add-IocSituation 'Password spray against the tenant' @($sprayRows | Where-Object
 Add-IocSituation 'Sign-ins from more than one country, MFA denials, Conditional Access blocks' ($multiCountryRows.Count + $mfaDeniedRows.Count + $caBlockedRows.Count) (Get-IocStatus ($multiCountryRows.Count + $mfaDeniedRows.Count + $caBlockedRows.Count) $iocSignInsCollected $false) $(if (-not $iocSignInsCollected) { 'Sign-in log not collected.' } else { "$($multiCountryRows.Count) user(s) signed in from more than one country (home country $homeCountry); $($mfaDeniedRows.Count) user(s) denied or failed MFA; $($caBlockedRows.Count) user(s) were blocked by Conditional Access after a correct password; $($lockoutRows.Count) locked out." }) 'Each of these means a password was accepted somewhere unexpected: the user travelled, uses a VPN, or someone else has the credentials.' 'ioc-signins' 'ioc-multi-country'
 Add-IocSituation 'Privileged roles, MFA methods, password resets and policy changes' ($iocRoleRows.Count + $iocMfaRows.Count + $iocPwAdminRows.Count + $iocCaRows.Count) (Get-IocStatus ($iocRoleRows.Count + $iocMfaRows.Count + $iocPwAdminRows.Count + $iocCaRows.Count) $iocAuditAvailable $false) $(if (-not $iocAuditAvailable) { "Directory audit log not available: $(Get-GraphFailure 'role assignment audit events')" } else { "$($iocRoleRows.Count) privileged role assignment(s), $($iocMfaRows.Count) MFA method registration(s) or change(s), $($iocPwAdminRows.Count) password reset(s) by another account, $($iocCaRows.Count) Conditional Access or security policy change(s) in $AuditDays days." }) 'Routine administration and attacker persistence look identical in the log; each item should match a ticket or a person who says "that was me".' 'ioc-admin' 'ioc-review'
 Add-IocSituation 'Accounts created, guests invited, mailbox delegates and Send As grants' ($iocNewUserRows.Count + $fullAccessRows.Count + $sendAsRows.Count) (Get-IocStatus ($iocNewUserRows.Count + $fullAccessRows.Count + $sendAsRows.Count) ($iocAuditAvailable -or $exoCollected) $false) "$($iocNewUserRows.Count) account(s) created or invited in $AuditDays days; $($fullAccessRows.Count) non-owner Full Access delegate(s)$(if ($SkipInboxRules) { ' (not scanned)' }); $($sendAsRows.Count) Send As grant(s)." 'Attackers create their own accounts and grant themselves mailbox access so they survive the victim''s password reset.' 'ioc-accounts' 'ioc-delegate'
+Add-IocSituation 'Items open to anyone on the internet (share scan)' $shareAnyone (Get-IocStatus $shareAnyone (-not $SkipShareScan -and ($shareSitesScanned -gt 0 -or $exoCollected)) $true) $(if ($SkipShareScan) { 'Share scan skipped (-SkipShareScan).' } elseif ($shareAnyone) { "$shareAnyone Anyone link(s) or anonymous calendar(s) found; see section 19." } else { "No Anyone links on the $shareSitesScanned site(s) this account can read and no anonymous calendars." }) 'An Anyone link needs no sign-in and leaves no record of who opened the file; it is open data.' 'ioc-sharing' 'share-anonymous'
 if ($mailboxAuditDisabled -eq $true) { Add-IocSituation 'Mailbox auditing' 1 'Urgent' 'Mailbox auditing is disabled organization-wide.' 'Without it there is no record of who read, moved or sent mail, so none of the above can be investigated.' 'ioc-auditrules' 'ioc-audit-off' }
 $iocSituationRows = @($script:iocSituationRows)
 $IocSituationFilters = @(@{ Label = 'Urgent'; Tag = 'urgent' }, @{ Label = 'Review'; Tag = 'review' }, @{ Label = 'Clear'; Tag = 'clear' }, @{ Label = 'Not checked'; Tag = 'notchecked' })
@@ -2216,7 +2236,7 @@ $groupSettings = Get-GraphAllSafe 'v1.0/groupSettings' 'group settings'
 $unified = $groupSettings | Where-Object { $_.displayName -eq 'Group.Unified' } | Select-Object -First 1
 function Get-GroupSettingValue { param([string]$Name) if (-not $unified) { return $null } ; $v = ($unified.values | Where-Object { $_.name -eq $Name } | Select-Object -First 1).value; return $v }
 $allowAddGuests = Get-GroupSettingValue 'AllowToAddGuests'; $allowGuestsAccess = Get-GroupSettingValue 'AllowGuestsToAccessGroups'
-$teamRows = @(); $teamsWithGuests = 0; $teamsPublic = 0; $teamsNoOwner = 0; $teamsInactive = 0; $teamsArchived = 0; $teamGuestTotal = 0
+$teamRows = @(); $teamsWithGuests = 0; $teamsPublic = 0; $teamsNoOwner = 0; $teamsInactive = 0; $teamsArchived = 0; $teamGuestTotal = 0; $TeamMembersByName = @{}
 $teamLimit = 400; $teamIdx = 0
 foreach ($g in ($teamGroups | Sort-Object displayName)) {
     $teamIdx++
@@ -2225,6 +2245,7 @@ foreach ($g in ($teamGroups | Sort-Object displayName)) {
     $owners  = @(Get-GraphAllSafe "v1.0/groups/$($g.id)/owners?`$select=id,displayName,userPrincipalName" "owners of $($g.displayName)")
     $members = @(Get-GraphAllSafe "v1.0/groups/$($g.id)/members?`$select=id,displayName,userPrincipalName,userType&`$top=999" "members of $($g.displayName)")
     $guests  = @($members | Where-Object { $_.userType -eq 'Guest' -or ([string]$_.userPrincipalName) -match '#EXT#' })
+    $TeamMembersByName[[string]$g.displayName] = @(@($members) + @($owners) | ForEach-Object { $(if ($_.userPrincipalName) { ([string]$_.userPrincipalName).ToLower() } elseif ($_.mail) { ([string]$_.mail).ToLower() }) } | Where-Object { $_ } | Select-Object -Unique)
     $team    = (Get-GraphAllSafe "v1.0/teams/$($g.id)?`$select=isArchived,memberSettings,guestSettings,messagingSettings" "settings of team $($g.displayName)" -NoPaging) | Select-Object -First 1
     $act     = $teamsActivity[[string]$g.id]
     $lastAct = if ($act -and $act.'Last Activity Date') { try { [datetime]$act.'Last Activity Date' } catch { $null } } else { $null }
@@ -2398,6 +2419,162 @@ $spoEvidence = if ($spoSettings) { "External sharing: $($spoKv['External sharing
 $reportConcealedNote = if ($teamsConcealed -or $siteConcealed -or $odConcealed) { "Microsoft 365 usage reports in this tenant conceal user, group and site names (they appear as hashes). To show real names, in the Microsoft 365 admin center go to Settings > Org settings > Services > Reports and clear 'Display concealed user, group, and site names in all reports'." } else { '' }
 if ($reportConcealedNote) { $spoKv['Usage report names'] = 'Concealed by the tenant report privacy setting (OneDrive, site and team owners show as hashes)'; $spoKvIssues['Usage report names'] = 'reports-concealed' }
 
+# ----------------------------------------------------------------------------------------------
+# Sharing and Access (section 19): who can reach what, across SharePoint sites, OneDrive, Teams and Exchange.
+# Looks for data open to the internet (Anyone links), to the whole organization, to outside people, and to
+# insiders outside the owning team or department. Read-only: drive item metadata and permissions only.
+# ----------------------------------------------------------------------------------------------
+$shareRows = @(); $crossDeptRows = @(); $guestAccessRows = @(); $shareScanNote = ''; $shareSitesScanned = 0; $shareSitesDenied = 0; $shareItemsScanned = 0; $shareCapHit = $false
+$shareAnyone = 0; $shareOrg = 0; $shareExternal = 0; $shareOutsideTeam = 0; $shareInternal = 0
+$VerifiedDomainNames = @($org.verifiedDomains | ForEach-Object { ([string]$_.name).ToLower() })
+function Test-ExternalIdentity { param([string]$Address) if (-not $Address -or $Address -notmatch '@') { return $false } ; $d = ($Address -split '@')[-1].ToLower(); if ($Address -match '#EXT#') { return $true } ; return -not ($VerifiedDomainNames -contains $d) }
+function Get-DeptOf { param([string]$Upn) if (-not $Upn) { return '' } ; $u = $UserByUpn[$Upn.ToLower()]; if ($u -and $u.department) { return [string]$u.department } ; return '' }
+function Add-ShareRow {
+    param([string]$Source, [string]$Container, [string]$Item, [string]$Url, [string]$AccessType, [string]$Who, [string]$Rights, [string]$Scope, [string]$OutsideTeam, [string]$GrantedBy, [string]$When, [string]$Level, [string]$Issue, [string]$OwnerDept, [string]$WhoDept)
+    $tags = @($Source.ToLower().Replace(' ', ''), $Scope.ToLower().Replace(' ', ''), $Level.ToLower())
+    if ($OutsideTeam -eq 'Yes') { $tags += 'outsideteam' }
+    if ($OwnerDept -and $WhoDept -and $OwnerDept -ne $WhoDept) { $tags += 'crossdept' }
+    $script:shareRows += [ordered]@{ 'Source' = $Source; 'Site / team / mailbox' = $Container; 'Item' = $Item; 'Access type' = $AccessType; 'Who has access' = $Who; 'Rights' = $Rights; 'Scope' = $Scope; 'Outside owning team' = $OutsideTeam; 'Department (owner / who)' = $(if ($OwnerDept -or $WhoDept) { "$OwnerDept / $WhoDept" } else { '' }); 'Granted by' = $GrantedBy; 'When' = $When; 'Level' = $Level; '_tags' = ($tags -join ' '); '_issues' = $(if ($Issue) { @{ 'Access type' = $Issue } } else { $null }); '_links' = $(if ($Url) { @{ 'Item' = $Url } } else { $null }) }
+}
+$script:shareRows = @()
+if ($SkipShareScan) { $shareScanNote = 'Share scan skipped (-SkipShareScan).' }
+else {
+    Write-Host "Scanning sharing and access across sites, OneDrive, Teams and guests..." -ForegroundColor Cyan
+    $MaxSites = 80; $MaxItemsPerDrive = 1500; $MaxPermissionLookups = 600; $permLookups = 0
+    $allSites = @(Get-GraphAllSafe 'v1.0/sites?search=*&$select=id,displayName,webUrl,createdDateTime' 'SharePoint sites' -MaxItems 400 | Where-Object { $_.webUrl -notmatch '/portals/|/sites/appcatalog|-my\.sharepoint\.com/personal/|/search$|contentTypeHub' })
+    if (Get-GraphFailure 'SharePoint sites') { $shareScanNote = "Sites could not be listed: $(Get-GraphFailure 'SharePoint sites')" }
+    $siteIdx = 0
+    foreach ($site in ($allSites | Sort-Object displayName)) {
+        $siteIdx++
+        if ($siteIdx -gt $MaxSites) { $shareCapHit = $true; break }
+        Write-Progress -Activity 'Scanning sharing' -Status $site.displayName -PercentComplete ([int](100 * $siteIdx / [Math]::Max(1, [Math]::Min($MaxSites, @($allSites).Count))))
+        $drives = @()
+        try { Confirm-GraphToken; $drives = @((Invoke-MgGraphRequest -Method GET -Uri "v1.0/sites/$($site.id)/drives?`$select=id,name,driveType,webUrl" -OutputType PSObject -ErrorAction Stop).value) }
+        catch { $shareSitesDenied++; continue }
+        $shareSitesScanned++
+        $teamName = [string]$site.displayName
+        $teamMembers = if ($TeamMembersByName.ContainsKey($teamName)) { $TeamMembersByName[$teamName] } else { $null }
+        $isOneDrive = $site.webUrl -match '-my\.sharepoint\.com'
+        $sourceLabel = if ($isOneDrive) { 'OneDrive' } elseif ($teamMembers) { 'Teams' } else { 'SharePoint' }
+        foreach ($drv in ($drives | Where-Object { $_.driveType -in @('documentLibrary', 'business') })) {
+            $items = @()
+            try {
+                $next = "v1.0/drives/$($drv.id)/root/search(q='')?`$select=id,name,webUrl,shared,createdBy,lastModifiedDateTime,size,folder,file,parentReference&`$top=200"
+                while ($next -and $items.Count -lt $MaxItemsPerDrive) {
+                    Confirm-GraphToken
+                    $pg = Invoke-MgGraphRequest -Method GET -Uri $next -OutputType PSObject -ErrorAction Stop
+                    $items += @($pg.value); $next = $pg.'@odata.nextLink'
+                }
+                if ($next) { $shareCapHit = $true }
+            } catch { Write-Verbose "Drive $($drv.name) in $($site.displayName) not readable: $($_.Exception.Message)"; continue }
+            $shareItemsScanned += $items.Count
+            foreach ($it in ($items | Where-Object { $_.shared })) {
+                $itemPath = $(if ($it.parentReference -and $it.parentReference.path) { (([string]$it.parentReference.path) -replace '^.*root:', '') + '/' + $it.name } else { [string]$it.name })
+                $itemLabel = "$(if ($it.folder) { '[folder] ' })$itemPath"
+                $ownerUpn = [string]$it.createdBy.user.email; if (-not $ownerUpn) { $ownerUpn = [string]$it.shared.owner.user.email }
+                $ownerDept = Get-DeptOf $ownerUpn
+                if ($permLookups -ge $MaxPermissionLookups) {
+                    # cap reached: record the item with the scope the drive reports, without per-grantee detail
+                    $scopeWord = switch ([string]$it.shared.scope) { 'anonymous' { 'Anyone' } 'organization' { 'Whole organization' } default { 'Specific people' } }
+                    Add-ShareRow -Source $sourceLabel -Container $site.displayName -Item $itemLabel -Url $it.webUrl -AccessType "Shared ($scopeWord)" -Who '(detail not fetched: permission lookup cap reached)' -Rights '' -Scope $scopeWord -OutsideTeam 'n/a' -GrantedBy ([string]$it.shared.sharedBy.user.displayName) -When (Format-DateText $it.shared.sharedDateTime) -Level $(if ($scopeWord -eq 'Anyone') { 'Urgent' } else { 'Review' }) -Issue $(if ($scopeWord -eq 'Anyone') { 'share-anonymous' } elseif ($scopeWord -eq 'Whole organization') { 'share-org' } else { $null }) -OwnerDept $ownerDept -WhoDept ''
+                    $shareCapHit = $true; continue
+                }
+                $perms = @()
+                try { Confirm-GraphToken; $permLookups++; $perms = @((Invoke-MgGraphRequest -Method GET -Uri "v1.0/drives/$($drv.id)/items/$($it.id)/permissions" -OutputType PSObject -ErrorAction Stop).value) } catch { Write-Verbose "Permissions not readable for $itemPath"; continue }
+                foreach ($pm in ($perms | Where-Object { -not $_.inheritedFrom })) {
+                    $rights = Join-List (@($pm.roles) | ForEach-Object { [string]$_ }) ', '
+                    $granted = @($(if ($pm.grantedToIdentitiesV2) { @($pm.grantedToIdentitiesV2) } elseif ($pm.grantedToV2) { @($pm.grantedToV2) } elseif ($pm.grantedTo) { @($pm.grantedTo) } else { @() }))
+                    $whoList = @(); $extAny = $false; $outside = 'n/a'; $whoDept = ''
+                    foreach ($g in $granted) {
+                        $gm = [string]$(if ($g.user) { $(if ($g.user.email) { $g.user.email } else { $g.user.displayName }) } elseif ($g.siteUser) { $(if ($g.siteUser.email) { $g.siteUser.email } else { $g.siteUser.displayName }) } elseif ($g.group) { "$($g.group.displayName) (group)" } elseif ($g.siteGroup) { "$($g.siteGroup.displayName) (site group)" } elseif ($g.application) { "$($g.application.displayName) (application)" } else { '' })
+                        if ($gm) { $whoList += $gm }
+                        if ($gm -and (Test-ExternalIdentity $gm)) { $extAny = $true }
+                        if ($gm -match '@' -and -not $whoDept) { $whoDept = Get-DeptOf $gm }
+                        if ($teamMembers -and $gm -match '@' -and -not (Test-ExternalIdentity $gm)) { $outside = $(if ($teamMembers -contains $gm.ToLower()) { 'No' } else { 'Yes' }) }
+                    }
+                    if ($pm.link) {
+                        $lscope = [string]$pm.link.scope
+                        $ltype = [string]$pm.link.type
+                        switch ($lscope) {
+                            'anonymous'    { $shareAnyone++;   Add-ShareRow -Source $sourceLabel -Container $site.displayName -Item $itemLabel -Url $it.webUrl -AccessType "Anyone link ($ltype)" -Who 'Anyone on the internet with the link' -Rights $rights -Scope 'Anyone' -OutsideTeam 'n/a' -GrantedBy ([string]$pm.grantedBy.user.displayName) -When (Format-DateText $pm.expirationDateTime) -Level 'Urgent' -Issue 'share-anonymous' -OwnerDept $ownerDept -WhoDept '' }
+                            'organization' { $shareOrg++;      Add-ShareRow -Source $sourceLabel -Container $site.displayName -Item $itemLabel -Url $it.webUrl -AccessType "Whole-organization link ($ltype)" -Who 'Anyone signed in to the organization (including guests)' -Rights $rights -Scope 'Whole organization' -OutsideTeam $(if ($teamMembers) { 'Yes' } else { 'n/a' }) -GrantedBy ([string]$pm.grantedBy.user.displayName) -When '' -Level 'Review' -Issue 'share-org' -OwnerDept $ownerDept -WhoDept '' }
+                            default        { $who = $(if ($whoList.Count) { Join-List $whoList '; ' } else { 'Specific people (list not returned)' }); if ($extAny) { $shareExternal++ } elseif ($outside -eq 'Yes') { $shareOutsideTeam++ } else { $shareInternal++ }
+                                             Add-ShareRow -Source $sourceLabel -Container $site.displayName -Item $itemLabel -Url $it.webUrl -AccessType "Specific-people link ($ltype)" -Who $who -Rights $rights -Scope $(if ($extAny) { 'External' } else { 'Specific people' }) -OutsideTeam $outside -GrantedBy ([string]$pm.grantedBy.user.displayName) -When (Format-DateText $pm.expirationDateTime) -Level $(if ($extAny) { 'Review' } elseif ($outside -eq 'Yes') { 'Review' } else { 'Info' }) -Issue $(if ($extAny) { 'share-external' } elseif ($outside -eq 'Yes') { 'share-outside-team' } else { $null }) -OwnerDept $ownerDept -WhoDept $whoDept }
+                        }
+                    } elseif ($granted.Count) {
+                        $who = Join-List $whoList '; '
+                        if ($extAny) { $shareExternal++ } elseif ($outside -eq 'Yes') { $shareOutsideTeam++ } else { $shareInternal++ }
+                        Add-ShareRow -Source $sourceLabel -Container $site.displayName -Item $itemLabel -Url $it.webUrl -AccessType 'Direct permission' -Who $who -Rights $rights -Scope $(if ($extAny) { 'External' } else { 'Specific people' }) -OutsideTeam $outside -GrantedBy ([string]$pm.grantedBy.user.displayName) -When '' -Level $(if ($extAny) { 'Review' } elseif ($outside -eq 'Yes') { 'Review' } else { 'Info' }) -Issue $(if ($extAny) { 'share-external' } elseif ($outside -eq 'Yes') { 'share-outside-team' } else { $null }) -OwnerDept $ownerDept -WhoDept $whoDept
+                    }
+                }
+            }
+        }
+    }
+    Write-Progress -Activity 'Scanning sharing' -Completed
+    # OneDrive of each enabled user: readable only where the signed-in account has rights (usually its own); counted, not warned
+    $odAccessible = 0; $odDenied = 0
+    foreach ($u in @($enabledMembers | Select-Object -First 150)) {
+        try {
+            Confirm-GraphToken
+            $odItems = @((Invoke-MgGraphRequest -Method GET -Uri "v1.0/users/$($u.id)/drive/root/search(q='')?`$select=id,name,webUrl,shared,createdBy,parentReference,folder&`$top=200" -OutputType PSObject -ErrorAction Stop).value)
+            $odAccessible++
+            foreach ($it in ($odItems | Where-Object { $_.shared })) {
+                $scopeWord = switch ([string]$it.shared.scope) { 'anonymous' { 'Anyone' } 'organization' { 'Whole organization' } default { 'Specific people' } }
+                if ($scopeWord -eq 'Anyone') { $shareAnyone++ } elseif ($scopeWord -eq 'Whole organization') { $shareOrg++ } else { $shareInternal++ }
+                Add-ShareRow -Source 'OneDrive' -Container "OneDrive of $($u.displayName)" -Item "$(if ($it.folder) { '[folder] ' })$($it.name)" -Url $it.webUrl -AccessType "Shared ($scopeWord)" -Who $(switch ($scopeWord) { 'Anyone' { 'Anyone on the internet with the link' } 'Whole organization' { 'Anyone signed in to the organization' } default { 'Specific people (see item)' } }) -Rights '' -Scope $scopeWord -OutsideTeam 'n/a' -GrantedBy ([string]$it.shared.sharedBy.user.displayName) -When (Format-DateText $it.shared.sharedDateTime) -Level $(if ($scopeWord -eq 'Anyone') { 'Urgent' } elseif ($scopeWord -eq 'Whole organization') { 'Review' } else { 'Info' }) -Issue $(if ($scopeWord -eq 'Anyone') { 'share-anonymous' } elseif ($scopeWord -eq 'Whole organization') { 'share-org' } else { $null }) -OwnerDept (Get-DeptOf $u.userPrincipalName) -WhoDept ''
+            }
+        } catch { $odDenied++ }
+    }
+    if (-not $shareScanNote) { $shareScanNote = "Scanned $shareItemsScanned item(s) in $shareSitesScanned site(s)$(if ($shareSitesDenied) { "; $shareSitesDenied site(s) were not readable by $($ctx.Account)" }); OneDrive: $odAccessible readable, $odDenied not readable by this account$(if ($shareCapHit) { '; caps reached (80 sites, 1,500 items per library, 600 permission lookups), so the list is a sample' })." }
+}
+# Teams: guests, public teams and external users / shared channels from the activity report
+foreach ($tr in $teamRows) {
+    if ([int]$tr['Guests'] -gt 0) { $shareExternal += [int]$tr['Guests']; Add-ShareRow -Source 'Teams' -Container $tr['Team'] -Item 'Whole team (all channels and files)' -Url '' -AccessType 'Guest membership' -Who $(if ($tr['Guest names']) { $tr['Guest names'] } else { "$($tr['Guests']) guest(s)" }) -Rights 'member' -Scope 'External' -OutsideTeam 'n/a' -GrantedBy (Join-List @($tr['Owners'])) -When '' -Level 'Review' -Issue 'teams-guests' -OwnerDept '' -WhoDept '' }
+    if ($tr['Visibility'] -eq 'Public') { $shareOrg++; Add-ShareRow -Source 'Teams' -Container $tr['Team'] -Item 'Whole team (all channels and files)' -Url '' -AccessType 'Public team' -Who 'Anyone in the organization can join and read' -Rights 'member' -Scope 'Whole organization' -OutsideTeam 'n/a' -GrantedBy (Join-List @($tr['Owners'])) -When $tr['Created'] -Level 'Review' -Issue 'teams-public' -OwnerDept '' -WhoDept '' }
+}
+foreach ($tid in $teamsActivity.Keys) {
+    $ta = $teamsActivity[$tid]
+    $extUsers = [int]$(if ($ta.'Active External Users') { $ta.'Active External Users' } else { 0 }); $sharedCh = [int]$(if ($ta.'Active Shared Channels') { $ta.'Active Shared Channels' } else { 0 })
+    if ($extUsers -gt 0 -or $sharedCh -gt 0) { $shareExternal += $extUsers; Add-ShareRow -Source 'Teams' -Container ([string]$ta.'Team Name') -Item "Shared channels ($sharedCh active)" -Url '' -AccessType 'External users via shared channels (90 days)' -Who "$extUsers active external user(s) from other organizations" -Rights 'channel member' -Scope 'External' -OutsideTeam 'n/a' -GrantedBy '' -When '' -Level 'Review' -Issue 'share-external' -OwnerDept '' -WhoDept '' }
+}
+# Exchange: shared mailboxes and their delegates, Send As, calendar folders open to the organization or anonymous users
+foreach ($fa in $fullAccessRows) { $ext = Test-ExternalIdentity ([string]$fa['Delegate (Full Access)']); $shareInternal++; Add-ShareRow -Source 'Exchange' -Container $fa['Mailbox'] -Item "Mailbox ($($fa['Mailbox type']))" -Url '' -AccessType 'Full Access delegate' -Who $fa['Delegate (Full Access)'] -Rights $fa['Rights'] -Scope $(if ($ext) { 'External' } else { 'Specific people' }) -OutsideTeam 'n/a' -GrantedBy '' -When '' -Level $(if ($fa['Mailbox type'] -eq 'SharedMailbox') { 'Info' } else { 'Review' }) -Issue $(if ($fa['Mailbox type'] -ne 'SharedMailbox') { 'ioc-delegate' } else { $null }) -OwnerDept (Get-DeptOf $fa['Mailbox']) -WhoDept (Get-DeptOf $fa['Delegate (Full Access)']) }
+foreach ($sa in $sendAsRows) { $shareInternal++; Add-ShareRow -Source 'Exchange' -Container $sa['Mailbox'] -Item 'Mailbox identity' -Url '' -AccessType 'Send As' -Who $sa['Trustee (can send as)'] -Rights 'SendAs' -Scope 'Specific people' -OutsideTeam 'n/a' -GrantedBy '' -When '' -Level 'Review' -Issue 'ioc-sendas' -OwnerDept '' -WhoDept '' }
+foreach ($cr in $calendarShareRows) { if ($cr['Level'] -eq 'Anonymous') { $shareAnyone++ } else { $shareOrg++ }; Add-ShareRow -Source 'Exchange' -Container $cr['Mailbox'] -Item 'Calendar' -Url '' -AccessType "Calendar folder permission ($($cr['Level']))" -Who $(if ($cr['Level'] -eq 'Anonymous') { 'Anyone (anonymous)' } else { 'Everyone in the organization (Default)' }) -Rights $cr['Access rights'] -Scope $(if ($cr['Level'] -eq 'Anonymous') { 'Anyone' } else { 'Whole organization' }) -OutsideTeam 'n/a' -GrantedBy '' -When '' -Level $(if ($cr['Level'] -eq 'Anonymous') { 'Urgent' } elseif ($cr['Access rights'] -match 'Reviewer|Editor|Owner|Author|PublishingEditor') { 'Review' } else { 'Info' }) -Issue $(if ($cr['Level'] -eq 'Anonymous') { 'calendar-anonymous' } elseif ($cr['Access rights'] -match 'Reviewer|Editor|Owner|Author|PublishingEditor') { 'calendar-default-open' } else { $null }) -OwnerDept (Get-DeptOf $cr['Mailbox']) -WhoDept '' }
+$shareRows = @($script:shareRows)
+# Guests: who they are and what they are members of
+$guestUsers = @($users | Where-Object { $_.userType -eq 'Guest' } | Sort-Object displayName | Select-Object -First 300)
+foreach ($g in $guestUsers) {
+    $memberOf = @(Get-GraphAllSafe "v1.0/users/$($g.id)/memberOf?`$select=id,displayName" "groups of guest $($g.displayName)" -MaxItems 200 | ForEach-Object { [string]$_.displayName } | Where-Object { $_ })
+    $gdomain = $(if ($g.mail) { ([string]$g.mail -split '@')[-1] } elseif ($g.userPrincipalName -match '#EXT#') { (([string]$g.userPrincipalName -split '#EXT#')[0] -split '_')[-1] } else { '' })
+    $guestAccessRows += [ordered]@{ 'Guest' = $g.displayName; 'Email domain' = $gdomain; 'Enabled' = $g.accountEnabled; 'Invited' = (Format-DateText $g.createdDateTime); 'Last sign-in' = $(if ($g.signInActivity) { Format-DateText $g.signInActivity.lastSignInDateTime } else { '' }); 'Member of (teams and groups)' = $(if ($memberOf.Count) { Join-List ($memberOf | Select-Object -First 8) '; ' } else { 'No group memberships (direct shares only)' }); 'Groups' = $memberOf.Count; '_issues' = @{ 'Guest' = 'guest' }; '_tags' = $(if ($memberOf.Count) { 'ingroups' } else { 'nogroups' }) + $(if ($g.accountEnabled -eq $false) { ' disabled' } else { '' }) }
+}
+$guestAccessRows = @($guestAccessRows)
+# Cross-department view: who in one department can reach another department's data (from the share rows that carry both departments)
+$crossPairs = @{}
+foreach ($sr in ($shareRows | Where-Object { $_['_tags'] -match '\bcrossdept\b' })) { $k = $sr['Department (owner / who)']; if (-not $crossPairs.ContainsKey($k)) { $crossPairs[$k] = @{ Count = 0; Items = @() } }; $crossPairs[$k].Count++; if ($crossPairs[$k].Items.Count -lt 3) { $crossPairs[$k].Items += "$($sr['Item']) -> $($sr['Who has access'])" } }
+$crossDeptRows = @($crossPairs.GetEnumerator() | Sort-Object { $_.Value.Count } -Descending | ForEach-Object { $parts = $_.Key -split ' / '; [ordered]@{ 'Owning department' = $parts[0]; 'Department with access' = $parts[1]; 'Shares' = $_.Value.Count; 'Examples' = (Join-List $_.Value.Items ' | ') } })
+$ShareFilters = @(@{ Label = 'Anyone (anonymous)'; Tag = 'anyone' }, @{ Label = 'Whole organization'; Tag = 'wholeorganization' }, @{ Label = 'External'; Tag = 'external' }, @{ Label = 'Outside owning team'; Tag = 'outsideteam' }, @{ Label = 'Cross-department'; Tag = 'crossdept' }, @{ Label = 'Specific people'; Tag = 'specificpeople' }, @{ Label = 'SharePoint'; Tag = 'sharepoint' }, @{ Label = 'OneDrive'; Tag = 'onedrive' }, @{ Label = 'Teams'; Tag = 'teams' }, @{ Label = 'Exchange'; Tag = 'exchange' }, @{ Label = 'Urgent'; Tag = 'urgent' }, @{ Label = 'Review'; Tag = 'review' })
+$GuestFilters = @(@{ Label = 'In teams or groups'; Tag = 'ingroups' }, @{ Label = 'No group memberships'; Tag = 'nogroups' }, @{ Label = 'Disabled'; Tag = 'disabled' })
+$shareKv = [ordered]@{
+    'Scan coverage'                                        = $shareScanNote
+    'Items or resources open to anyone on the internet'    = $shareAnyone
+    'Items or resources open to the whole organization'    = $shareOrg
+    'Grants to people outside the organization (guests, external links, shared-channel users)' = $shareExternal
+    'Grants to insiders outside the owning team'           = $shareOutsideTeam
+    'Cross-department grants (owner and recipient in different departments)' = @($shareRows | Where-Object { $_['_tags'] -match '\bcrossdept\b' }).Count
+    'Guest accounts in the directory'                      = @($users | Where-Object { $_.userType -eq 'Guest' }).Count
+    'Shared mailboxes'                                     = $(if ($exoCollected) { $sharedMailboxCount } else { 'Not collected' })
+    'Calendars readable by everyone in the organization / by anonymous users' = $(if ($exoCollected -and -not $SkipInboxRules) { "$(@($calendarShareRows | Where-Object { $_['Level'] -eq 'Default' }).Count) / $(@($calendarShareRows | Where-Object { $_['Level'] -eq 'Anonymous' }).Count)" } else { 'Not scanned' })
+    'Calendar sharing policy (external)'                   = $(if ($sharingPolicyText) { $sharingPolicyText } else { 'Not collected' })
+}
+$shareKvIssues = @{}
+if ($shareAnyone) { $shareKvIssues['Items or resources open to anyone on the internet'] = 'share-anonymous' }
+if ($shareOrg) { $shareKvIssues['Items or resources open to the whole organization'] = 'share-org' }
+if ($shareExternal) { $shareKvIssues['Grants to people outside the organization (guests, external links, shared-channel users)'] = 'share-external' }
+if ($shareOutsideTeam) { $shareKvIssues['Grants to insiders outside the owning team'] = 'share-outside-team' }
+if ($sharingPolicyText -and $sharingPolicyText -match 'Anonymous|CalendarSharingFreeBusyDetail|CalendarSharingFreeBusyReviewer') { $shareKvIssues['Calendar sharing policy (external)'] = 'sharing-policy-external' }
+
 # Defender for Office 365 / EOP overall status
 $safeLinksActive  = @($safeLinksRows | Where-Object { $_['Email'] -eq $true }).Count
 $safeAttachActive = @($safeAttachRows | Where-Object { $_['Enabled'] -eq $true -and $_['Action'] -ne 'Allow' }).Count
@@ -2543,6 +2720,8 @@ $FrameworkMap = @{
     'Teams guest and external access'              = @{ Nist = 'PR.AA-05, GV.SC-05 (third-party access), PR.DS-01'; Cis365 = '8.2 External access and unmanaged accounts; 8.5 Meeting policies (anonymous join, lobby); 5.1.6 Guest user settings; 1.2.1 Public groups'; CisV8 = '3.3 (data access control), 6.8'; Ffiec = 'CAT/ACET D3.PC.Am; D4.C Connections (third-party connectivity)' }
     'SharePoint and OneDrive external sharing'     = @{ Nist = 'PR.DS-01, PR.DS-02, PR.AA-05, PR.DS-10'; Cis365 = '7.2.3 External content sharing restricted; 7.2.5 Guests cannot re-share; 7.2.6 Sharing domain allow list; 7.2.7 Default link type; 7.3.2 OneDrive sync for unmanaged devices'; CisV8 = '3.3, 3.10, 6.8'; Ffiec = 'CAT/ACET D3.PC.Am; IT Handbook Information Security: Data classification and sharing' }
     'Audit logging (unified audit log)'            = @{ Nist = 'PR.PS-04 (log records generated and available), DE.CM-01, DE.CM-03, DE.CM-09, RS.AN-03'; Cis365 = '3.1.1 Ensure Microsoft 365 audit log search is enabled; 6.1.1 Mailbox auditing'; CisV8 = '8.2 (collect audit logs), 8.5 (detailed logs), 8.10 (retain logs)'; Ffiec = 'CAT/ACET D3.DC.Ev Event Detection, D2.MA Monitoring and Analysing; IT Handbook Information Security: Log management; Authentication Guidance (2021): logging and monitoring' }
+    'Content open to anyone on the internet'       = @{ Nist = 'PR.DS-01, PR.DS-10, PR.AA-05'; Cis365 = '7.2.3 External sharing restricted; 7.2.7 Link sharing restricted'; CisV8 = '3.3 (data access control lists)'; Ffiec = 'CAT/ACET D3.PC.Am; IT Handbook Information Security: data classification; GLBA Safeguards' }
+    'Content open to the whole organization'       = @{ Nist = 'PR.AA-05 (least privilege), PR.DS-01'; Cis365 = '7.2.7 Default link type; 1.2.1 Public groups'; CisV8 = '3.3, 6.8'; Ffiec = 'CAT/ACET D3.PC.Am: access rights administration' }
     'Usage report names are concealed'             = @{ Nist = 'ID.AM-01, ID.AM-03 (data flows and ownership), DE.CM-03'; Cis365 = 'n/a (reporting prerequisite)'; CisV8 = '1.1, 3.2 (data inventory)'; Ffiec = 'CAT/ACET D1.G.Ov Oversight: management information' }
     'Intune is not licensed'                       = @{ Nist = 'ID.AM-01, PR.PS-01'; Cis365 = 'n/a (licensing prerequisite)'; CisV8 = '1.1, 4.1'; Ffiec = 'CAT/ACET D3.PC.De' }
     'Entra ID P1 is not licensed'                  = @{ Nist = 'PR.AA-03, DE.CM-03'; Cis365 = 'n/a (licensing prerequisite for Conditional Access and sign-in logs)'; CisV8 = '6.3, 8.2'; Ffiec = 'Authentication Guidance (2021): risk-based controls' }
@@ -2716,6 +2895,16 @@ $Playbooks = @{
         'Confirm mailbox auditing is on as well: Get-OrganizationConfig | Select AuditDisabled should be False.',
         'Set retention: Audit (Standard) keeps 180 days; with Microsoft 365 E5 or the Audit Premium add-on create a retention policy for one year. Examiners commonly ask for 12 months.',
         'Re-run this report after 24 hours; the Review These Now section will then show sharing, download and mailbox-rule activity.'); Verify = 'Section 3 row "Audit logging (unified audit log)" reads Enabled and the audit-log rows in section 2 stop saying Not checked.' }
+    'Content open to anyone on the internet' = @{ Owner = 'Content owners with IT provider / MSP'; Effort = 'One hour plus owner follow-up'; Prereq = 'None'; Steps = @(
+        'Section 19, filter Anyone (anonymous): open each item with its link, choose Manage access, and remove the Anyone link (or set an expiry if it must stay for a few days).',
+        'For calendars listed with Anonymous permission: Set-MailboxFolderPermission -Identity "user:\Calendar" -User Anonymous -AccessRights None.',
+        'SharePoint admin center > Policies > Sharing: set SharePoint and OneDrive to New and existing guests (never Anyone) and set Anyone links to expire if they must remain for a specific site.',
+        'Re-run the report; the count must be zero.'); Verify = 'Section 19 shows zero items open to anyone and the finding disappears.' }
+    'Content open to the whole organization' = @{ Owner = 'Content owners with IT provider / MSP'; Effort = 'Half a day'; Prereq = 'None'; Steps = @(
+        'Section 19, filter Whole organization: for each item decide whether every employee and guest should read it; if not, Manage access and replace the organization link with specific people or a team.',
+        'Teams admin center > Teams: set teams holding board, HR, lending or customer material to Private.',
+        'SharePoint admin center > Sharing > File and folder links: Default link type = Specific people; Default permission = View.',
+        'Exchange: set calendar Default permissions above free/busy back to AvailabilityOnly (Set-MailboxFolderPermission -User Default -AccessRights AvailabilityOnly).'); Verify = 'Section 19 shows only intended organization-wide items (for example the staff handbook site).' }
     'Usage report names are concealed' = @{ Owner = 'IT provider / MSP with Global Administrator'; Effort = 'Five minutes'; Prereq = 'Global Administrator'; Steps = @(
         'Microsoft 365 admin center (admin.microsoft.com) > Settings > Org settings > Services tab > Reports.',
         'Clear "Display concealed user, group, and site names in all reports" and Save.',
@@ -2818,6 +3007,8 @@ foreach ($g in $remediationGuides) {
 }
 # Licensing gaps that stop whole control families from existing
 if ($script:HasIntune -eq $false)  { Add-Remediation -Priority 'High' -Finding 'Intune is not licensed' -State 'No Intune service plan in the subscribed SKUs, so device compliance, configuration policies and device-based Conditional Access cannot be implemented.' -Action 'License Microsoft Intune (included in Microsoft 365 Business Premium, E3 and E5) and then complete the device controls above.' -Section 'Tenant Overview' }
+if ($shareAnyone -gt 0) { Add-Remediation -Priority 'High' -Finding 'Content open to anyone on the internet' -State "$shareAnyone Anyone link(s) or anonymous calendar permission(s) found in the share scan (section 19)." -Action 'Remove each Anyone link from the item (Manage access), set calendar Anonymous permissions to None, then set the SharePoint and OneDrive sharing level to New and existing guests so Anyone links cannot be created again.' -Section 'Sharing and Access' -Url 'https://admin.microsoft.com/sharepoint?page=sharing&modern=true' }
+if ($shareOrg -gt 0) { Add-Remediation -Priority 'Medium' -Finding 'Content open to the whole organization' -State "$shareOrg whole-organization link(s), public team(s) or organization-readable calendar(s) (section 19)." -Action 'Replace People-in-your-organization links with specific people, make teams holding confidential material Private, set the default link type to Specific people, and set calendar Default permissions to free/busy.' -Section 'Sharing and Access' -Url 'https://admin.microsoft.com/sharepoint?page=sharing&modern=true' }
 if ($reportConcealedNote) { Add-Remediation -Priority 'High' -Finding 'Usage report names are concealed' -State 'The Microsoft 365 usage reports return hashes instead of user, group and site names, so the OneDrive, SharePoint site and Teams inventories cannot be attributed to people.' -Action 'In the Microsoft 365 admin center clear the report privacy setting "Display concealed user, group, and site names in all reports" (Settings > Org settings > Services > Reports). One-time tenant setting; the script never changes it.' -Section 'SharePoint' -Url 'https://admin.microsoft.com/#/Settings/Services/:/Settings/L1/Reports' }
 if ($script:HasEntraP1 -eq $false) { Add-Remediation -Priority 'Low' -Finding 'Entra ID P1 is not licensed' -State 'No Entra ID P1/P2 service plan, so Conditional Access, the MFA registration report and sign-in activity are unavailable; protection relies on security defaults.' -Action 'License Entra ID P1 (included in Microsoft 365 Business Premium and E3) to gain Conditional Access and the MFA registration and sign-in reports this report measures.' -Section 'Tenant Overview' }
 # Privileged access
@@ -2936,11 +3127,12 @@ $sections = @(
     @{ Id = 'exchange';     Title = '15. Exchange Online' },
     @{ Id = 'defender';     Title = '16. Defender and Email Protection' },
     @{ Id = 'teams';        Title = '17. Microsoft Teams' },
-    @{ Id = 'sharepoint';   Title = '18. SharePoint and OneDrive' }
+    @{ Id = 'sharepoint';   Title = '18. SharePoint and OneDrive' },
+    @{ Id = 'sharing';      Title = '19. Sharing and Access' }
 )
 $SectionAnchors = @{ 'Authentication Methods' = 'authmethods'; 'Conditional Access' = 'ca'; 'Users' = 'users'; 'Managed Devices' = 'devices'; 'MDM Compliance Policies' = 'mdm'; 'Intune Policies' = 'profiles'; 'Exchange Online' = 'exchange'; 'Enterprise Applications' = 'apps'; 'Privileged Users' = 'roles' }
 $SectionAnchors['Tenant Overview'] = 'overview'; $SectionAnchors['Executive Summary'] = 'overview'; $SectionAnchors['Remediation Plan'] = 'remediation'; $SectionAnchors['Secure Score'] = 'overview'; $SectionAnchors['Privileged Users'] = 'roles'; $SectionAnchors['Exchange Online'] = 'exchange'; $SectionAnchors['Defender'] = 'defender'; $SectionAnchors['Enterprise Applications'] = 'apps'
-$SectionAnchors['Indications of Compromise'] = 'ioc'; $SectionAnchors['Framework Alignment'] = 'frameworks'; $SectionAnchors['Teams'] = 'teams'; $SectionAnchors['SharePoint'] = 'sharepoint'
+$SectionAnchors['Indications of Compromise'] = 'ioc'; $SectionAnchors['Framework Alignment'] = 'frameworks'; $SectionAnchors['Sharing and Access'] = 'sharing'; $SectionAnchors['Teams'] = 'teams'; $SectionAnchors['SharePoint'] = 'sharepoint'
 # ---- Directory synchronization (Entra Connect) for the overview
 $syncEnabled = [bool]$org.onPremisesSyncEnabled
 $syncLast    = $org.onPremisesLastSyncDateTime
@@ -3537,6 +3729,23 @@ $governanceKv = [ordered]@{
     'Standards referenced'           = 'NIST CSF 2.0, NIST SP 800-63B, CIS Microsoft 365 Foundations Benchmark, CIS Controls v8, FFIEC IT Examination Handbook, FFIEC Authentication Guidance (2021), FFIEC CAT / NCUA ACET domains (section 5)'
 }
 
+$shareSectionHtml = @"
+<section id='sharing'><h2>19. Sharing and Access</h2>
+<p class='meta'>Who can reach what. Every share and access grant the signed-in account can see across SharePoint sites, OneDrive, Teams and Exchange, classified by how far it reaches: <b>Anyone</b> (open to the internet, no sign-in), <b>Whole organization</b> (every account in the tenant, including signed-in guests), <b>External</b> (named people outside the institution: guests, external links, shared-channel users), <b>Specific people</b> inside the organization, with a flag when the recipient is <b>outside the owning team</b> or in a <b>different department</b> from the owner. Use it to find data leaving the bank, data open wider than intended, and insiders with access they should not have. The scan reads only what $(HtmlEnc $ctx.Account) is allowed to read; sites and OneDrives it cannot open are counted, not listed, so a SharePoint Administrator or site owner may see more.</p>
+$(New-KvTable $shareKv -Issues $shareKvIssues)
+<h3>All shares and access grants</h3>
+$(New-HtmlTable @($shareRows | Sort-Object @{ Expression = { @{ 'Urgent' = 0; 'Review' = 1; 'Info' = 2 }[[string]$_['Level']] } }, @{ Expression = { [string]$_['Source'] } } | Select-Object -First 2000) -Id 'tbl-shares' -Filters $ShareFilters -Columns 'Source','Site / team / mailbox','Item','Access type','Who has access','Rights','Scope','Outside owning team','Department (owner / who)','Granted by','When','Level' -EmptyText $(if ($SkipShareScan) { 'Share scan skipped (-SkipShareScan); Teams, Exchange and guest access are still listed when present.' } else { 'No shares or access grants were found in the sources this account can read.' }))
+$(if ($shareRows.Count -gt 2000) { "<p class='note'>Showing the first 2,000 of $($shareRows.Count) rows (Urgent and Review first). The CSV export of tickets and the usage reports hold the rest.</p>" })
+<h3>Cross-department access</h3>
+<p class='meta'>Grants where the owner of the content and the person given access are in different departments (from the Department field in Entra ID). Expected between, for example, Lending and Compliance; worth a question when, for example, a branch user can read Finance or HR files.</p>
+$(New-HtmlTable $crossDeptRows -Columns 'Owning department','Department with access','Shares','Examples' -EmptyText 'No cross-department grants were found (or departments are not populated in Entra ID).')
+<h3>Guests and what they can reach</h3>
+$(New-HtmlTable $guestAccessRows -Id 'tbl-guests' -Filters $GuestFilters -Columns 'Guest','Email domain','Enabled','Invited','Last sign-in','Member of (teams and groups)','Groups' -EmptyText 'No guest accounts exist in the directory.')
+<h3>Calendars open to the organization or to anonymous users</h3>
+$(if (-not $exoCollected) { "<p class='empty'>Exchange Online was not collected.</p>" } elseif ($SkipInboxRules) { "<p class='empty'>Calendar permissions were not scanned (-SkipInboxRules).</p>" } else { New-HtmlTable $calendarShareRows -Columns 'Mailbox','Level','Access rights' -EmptyText 'No calendar is readable beyond free/busy by everyone in the organization or by anonymous users.' })
+</section>
+"@
+
 $html = @"
 <!DOCTYPE html>
 <html lang='en'><head><meta charset='utf-8'><title>$(HtmlEnc $ClientLabel) - Microsoft 365 Audit Evidence</title><style>$css</style></head>
@@ -3695,6 +3904,7 @@ $(if ($mdeCollected) { (New-KvTable $mdeKv) + (New-HtmlTable $mdeRows -Id 'tbl-m
 </section>
 $teamsSectionHtml
 $spoSectionHtml
+$shareSectionHtml
 <div id='moreModal' class='modal' hidden><div class='modal-box' role='dialog' aria-modal='true' aria-labelledby='moreTitle'><div class='modal-head'><b id='moreTitle'></b><button type='button' id='moreClose'>Close</button></div><div class='modal-body' id='moreBody'></div></div></div>
 <footer class='brand'>$(if ($logoImg) { "<a href='https://audithat.com' target='_blank' rel='noopener'>$logoImg</a>" })<div>Microsoft 365 Audit Evidence for $(HtmlEnc $ClientLabel), generated $($ReportDate.ToString('MMMM d, yyyy HH:mm')) by $(HtmlEnc $ctx.Account).<br>Produced locally by the free, read-only Audit Hat M365 Audit Evidence script, version $ScriptVersion (<a href='$RepoUrl' target='_blank' rel='noopener'>source and updates on GitHub</a>). Provided by $brandLink. No data left your organization.<br>Running on-premises Active Directory as well? The companion <a href='$AdRepoUrl' target='_blank' rel='noopener'>AuditHat AD Governance Report</a> covers it the same way.</div></footer>
 <script>

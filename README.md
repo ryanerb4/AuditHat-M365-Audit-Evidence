@@ -34,7 +34,7 @@ its existing staff and IT provider, and that auditors and examiners recognise as
 | **Monthly, next run** | Same | "Progress since last report" shows what closed, what regressed and what is new. Chase open tickets |
 | **Quarterly** | IT steering committee | Review the Executive Summary, the Roadmap and the Governance table; approve phases, owners, licences and budget; record decisions in minutes. Sign the review line |
 | **At least annually, and after any incident** | Board (or its risk / audit committee) | Receive the Executive Summary (narrative, tiles, trend charts, progress). Sign the "noted by the board" line |
-| **Before and during an exam or audit** | Auditor / examiner | Section 3 as the control test, section 5 for the framework mapping, the history for the trend, sections 6 to 18 as evidence. The sign-off block shows governance |
+| **Before and during an exam or audit** | Auditor / examiner | Section 3 as the control test, section 5 for the framework mapping, the history for the trend, sections 6 to 19 as evidence. The sign-off block shows governance |
 
 Keep every monthly report. Together with the history file they are the evidence that controls are
 measured the same way each month, that gaps are planned and worked, and that the board is informed:
@@ -72,7 +72,7 @@ Entra Connect sync status and links to the companion from the overview and the f
 ## Navigating the report
 
 The report opens as a set of pages: the left navigation shows one section at a time, with Previous
-and Next buttons and a "Section n of 18" marker at the top. Every link inside the report (a finding
+and Next buttons and a "Section n of 19" marker at the top. Every link inside the report (a finding
 in the roadmap, "Progress since last report", a situation-table detail) opens the right page and
 scrolls to the item. **Show all sections** switches to the whole report on one long page for
 scrolling or searching with Ctrl+F, and the choice is remembered in the browser. Printing always
@@ -188,7 +188,7 @@ If a permission was not granted, the script warns at sign-in and marks the affec
 `DeviceManagementManagedDevices.Read.All`, `DeviceManagementApps.Read.All`, `Device.Read.All`,
 `AuditLog.Read.All`, `UserAuthenticationMethod.Read.All`, `RoleManagement.Read.Directory`, `SecurityEvents.Read.All` (Microsoft Secure Score),
 `IdentityRiskyUser.Read.All` and `IdentityRiskEvent.Read.All` (Entra ID Protection, P2), `Reports.Read.All` (Teams, SharePoint and OneDrive usage reports),
-`SharePointTenantSettings.Read.All` (SharePoint sharing settings), `TeamSettings.Read.All` (per-team settings)
+`SharePointTenantSettings.Read.All` (SharePoint sharing settings), `TeamSettings.Read.All` (per-team settings), `Sites.Read.All` (sharing links and permissions on items the signed-in account can read)
 
 Beyond Microsoft Graph, the connector also carries two delegated permissions on other Microsoft
 APIs so that one sign-in covers everything: **Office 365 Exchange Online > Exchange.Manage** (the
@@ -233,7 +233,7 @@ delegated permissions listed above. Takes about five minutes as a Global Adminis
    `DeviceManagementManagedDevices.Read.All`, `DeviceManagementApps.Read.All`, `Device.Read.All`,
    `AuditLog.Read.All`, `UserAuthenticationMethod.Read.All`, `RoleManagement.Read.Directory`, `SecurityEvents.Read.All` (Microsoft Secure Score),
 `IdentityRiskyUser.Read.All` and `IdentityRiskEvent.Read.All` (Entra ID Protection, P2), `Reports.Read.All` (Teams, SharePoint and OneDrive usage reports),
-`SharePointTenantSettings.Read.All` (SharePoint sharing settings), `TeamSettings.Read.All` (per-team settings)
+`SharePointTenantSettings.Read.All` (SharePoint sharing settings), `TeamSettings.Read.All` (per-team settings), `Sites.Read.All` (sharing links and permissions on items the signed-in account can read)
 5. Still on **API permissions**, click **Grant admin consent for \<tenant\>** and confirm. Every
    row should show a green check.
 6. Run the script with both IDs:
@@ -325,6 +325,7 @@ without that person needing to understand PowerShell or Microsoft Graph.
 | 16 | Defender and Email Protection | Get-HostedContentFilterPolicy, Get-MalwareFilterPolicy, Get-AntiPhishPolicy, Get-SafeLinksPolicy, Get-SafeAttachmentPolicy, Get-AtpPolicyForO365, Get-EOPProtectionPolicyRule, Get-ATPProtectionPolicyRule, Defender for Endpoint API | Licence status for Defender for Office 365 and Defender for Endpoint, preset security policies, anti-spam actions and bulk threshold, ZAP, anti-malware common attachments filter, anti-phishing impersonation settings and threshold, Safe Links, Safe Attachments, and Defender for Endpoint device list (sensor health, risk, exposure, last seen) with exposure and configuration scores |
 | 17 | Microsoft Teams | groups (Team-provisioned), groups/{id}/owners and members, teams/{id}, groupSettings (Group.Unified), reports/getTeamsTeamActivityDetail, optional Teams PowerShell (federation, client and meeting policy) | Guest and external access posture, every team with visibility, owners, members, guests, archived state and 90-day activity. Filters: Guests, Public, No owner, Single owner, Inactive, Archived |
 | 18 | SharePoint and OneDrive | admin/sharepoint/settings, reports/getSharePointSiteUsageDetail, getOneDriveUsageAccountDetail, getSharePointActivityUserDetail, getOneDriveActivityUserDetail | Tenant sharing level (Anyone links, guests, domain restrictions, re-sharing, legacy auth, unmanaged sync, idle sign-out), users who shared files externally in 30 days, every site (type, owner, activity, storage) and every OneDrive with the owner's account state. Filters on each table |
+| 19 | Sharing and Access | sites?search, drives/root/search, items/{id}/permissions (Sites.Read.All), users/{id}/drive, Teams rows and activity report, Exchange mailbox permissions, Get-MailboxFolderPermission (Calendar), Get-SharingPolicy, users/{id}/memberOf | Every share and access grant the account can read, across SharePoint, OneDrive, Teams and Exchange, classified Anyone / Whole organization / External / Specific people, flagged when outside the owning team or across departments; filters by reach, source and severity. Cross-department matrix, guests with their group memberships, calendars open to the organization or anonymous users. `-SkipShareScan` skips the per-item scan |
 
 ### The auditor questions this answers
 
@@ -364,6 +365,7 @@ for the approver. The report never guesses.
 | `-AuditDays` | `30` | Directory audit log window; also the window for the Indications of Compromise section (sign-in analysis uses at most 30 days) |
 | `-NoOpen` | off | Do not open the finished report in the default browser |
 | `-TestPermissions` | off | Sign in, probe every Graph endpoint, resource token, module and licence the report depends on, print a table of what is missing (with the permission or licence to add), and exit without collecting |
+| `-SkipShareScan` | off | Skip the per-item sharing scan of SharePoint sites and OneDrive in section 19 (Teams, Exchange and guest access are still listed). The scan is capped at 80 sites, 1,500 items per library and 600 permission lookups |
 | `-SkipAuditLog` | off | Skip the unified audit log search (sharing events, download volumes, mailbox rule and permission changes) that feeds section 2; faster on very large tenants |
 | (none) | | **Version** is printed in the console banner, the report navigation and footer (`2026.10.31` style: year.month.day of the last change). The report links to this GitHub repository for source and updates |
 | `-NoHistory` | off | Do not read or write the per-tenant `<Client> - history.json` file; the progress section then shows only the current run |
@@ -528,6 +530,16 @@ Critical, and a tenant without an Intune licence at all is High.
 The tenant's report privacy setting ("Display concealed user, group, and site names in all reports")
 is on. The report flags it as a High finding with the exact path to clear it in the Microsoft 365
 admin center; the script itself never changes tenant settings. Names appear on the next run.
+
+**Who can see our data, and is anything open to the internet or to people who should not have it?**
+Section 19 lists every share and access grant the signed-in account can read: Anyone links and
+anonymous calendars (open to the internet), whole-organization links and public teams (every account
+in the tenant), guests and external recipients, and specific-people grants flagged when the person is
+outside the owning team or in another department. Filters narrow it by reach, by source (SharePoint,
+OneDrive, Teams, Exchange) and by severity, a cross-department table shows which departments can reach
+each other's content, and the guest table shows what each outside person belongs to. The scan sees
+only what the signed-in account can open; run it as a SharePoint Administrator who is also a site
+collection administrator, or turn on the unified audit log, for full coverage.
 
 **Which MFA product do we have, and are we ready for passkeys?**
 Section 10 names the MFA product (Microsoft Entra MFA, a federated provider such as ADFS, Okta or

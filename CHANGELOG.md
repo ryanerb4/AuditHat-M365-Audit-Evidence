@@ -31,6 +31,13 @@ First public release.
   anti-phishing, Safe Links, Safe Attachments, Defender for Endpoint devices and scores.
 - Directory synchronization status (Entra Connect, on-premises AD domains, sync server) and a link to
   the companion AuditHat AD Governance Report.
+- Section 19 "Sharing and Access": every share and access grant across SharePoint sites, OneDrive,
+  Teams and Exchange (sharing links and item permissions, guest and public teams, shared-channel
+  external users, Full Access and Send As, calendar Default/Anonymous permissions), classified Anyone /
+  Whole organization / External / Specific people with outside-owning-team and cross-department flags,
+  guests with memberships, cross-department matrix. New scope Sites.Read.All; `-SkipShareScan`.
+  Findings "Content open to anyone on the internet" (High) and "Content open to the whole
+  organization" (Medium) with playbooks.
 - Enterprise Applications table redesigned: one application column (name, publisher, type, sign-in,
   assignment, assigned users), a Risk level column, all permissions in one column with the first four
   inline and a Show all dialog grouped by permission type, app IDs removed, risk and consent filters.
