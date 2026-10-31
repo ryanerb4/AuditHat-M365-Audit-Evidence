@@ -112,7 +112,8 @@ param(
     [switch]$DeviceCode,           # sign in with a device code instead of the browser (for remote sessions or if the browser flow fails)
     [switch]$NoHistory,            # do not read or write the per-tenant history file used for the progress charts and change log
     [switch]$NoOpen,               # do not open the finished report in the default browser
-    [switch]$SkipAuditLog          # skip the unified audit log search (sharing, downloads, mailbox rule changes) used for indications of compromise
+    [switch]$SkipAuditLog,         # skip the unified audit log search (sharing, downloads, mailbox rule changes) used for indications of compromise
+    [switch]$TestPermissions       # sign in, probe every API and permission the report uses, print what is missing, and exit without collecting
 )
 
 $ErrorActionPreference = 'Stop'
@@ -505,6 +506,65 @@ function Resolve-CaTargets {
 # Configuration issue catalog. Every flagged value in the report carries an (i) icon; clicking it shows the
 # title, why it matters to a bank or credit union, and the recommended fix. Keyed by a short issue id.
 # ----------------------------------------------------------------------------------------------
+if ($TestPermissions) {
+    Write-Host "`nPERMISSION TEST: each line is one capability the report uses. Nothing is collected or written." -ForegroundColor Cyan
+    $script:permResults = @()
+    function Add-PermResult { param([string]$Capability, [string]$Result, [string]$Needs) $script:permResults += [pscustomobject]@{ Capability = $Capability; Result = $Result; 'Needs / fix' = $Needs } }
+    $missing = @($Scopes | Where-Object { $ctx.Scopes -notcontains $_ })
+    Add-PermResult 'Graph delegated scopes granted' $(if ($missing.Count) { "MISSING $($missing.Count)" } else { 'OK' }) $(if ($missing.Count) { "Add to the connector and consent: $($missing -join ', ')" } else { "All $($Scopes.Count) requested scopes are granted" })
+    function Test-GraphGet { param([string]$Cap, [string]$Uri, [string]$Needs)
+        try { Confirm-GraphToken; Invoke-MgGraphRequest -Method GET -Uri $Uri -OutputType PSObject -ErrorAction Stop | Out-Null; Add-PermResult $Cap 'OK' '' }
+        catch { $t = Get-GraphErrorText $_; Add-PermResult $Cap $(if ($t -match 'Forbidden|Unauthorized') { 'NO PERMISSION' } elseif ($t -match '(?i)licen[cs]e|premium|BadRequest') { 'NOT LICENSED' } else { 'FAILED' }) "$Needs. $t" }
+    }
+    Test-GraphGet 'Tenant, users, groups, roles'            'v1.0/organization?$select=id'                                       'Organization.Read.All, Directory.Read.All'
+    Test-GraphGet 'Conditional Access policies'              'v1.0/identity/conditionalAccess/policies?$top=1'                    'Policy.Read.ConditionalAccess (Entra ID P1 for policies to exist)'
+    Test-GraphGet 'Authentication methods policy'            'v1.0/policies/authenticationMethodsPolicy'                           'Policy.Read.AuthenticationMethod'
+    Test-GraphGet 'Per-user authentication methods'          'v1.0/me/authentication/methods'                                     'UserAuthenticationMethod.Read.All (used for MFA and passkey facts when the P1 report is unavailable)'
+    Test-GraphGet 'MFA registration report (Entra ID P1)'    'v1.0/reports/authenticationMethods/userRegistrationDetails?$top=1'  'Entra ID P1; without it the report falls back to per-user methods'
+    Test-GraphGet 'Directory audit log'                      'v1.0/auditLogs/directoryAudits?$top=1'                              'AuditLog.Read.All'
+    Test-GraphGet 'Sign-in log (Entra ID P1)'                'v1.0/auditLogs/signIns?$top=1'                                      'AuditLog.Read.All plus Entra ID P1'
+    Test-GraphGet 'Entra ID Protection (Entra ID P2)'        'v1.0/identityProtection/riskyUsers?$top=1'                          'IdentityRiskyUser.Read.All plus Entra ID P2'
+    Test-GraphGet 'Intune compliance policies'               'v1.0/deviceManagement/deviceCompliancePolicies?$top=1'              'DeviceManagementConfiguration.Read.All plus an Intune licence'
+    Test-GraphGet 'Microsoft Secure Score'                   'v1.0/security/secureScores?$top=1'                                  'SecurityEvents.Read.All'
+    Test-GraphGet 'Enterprise applications and consents'     'v1.0/servicePrincipals?$top=1'                                      'Application.Read.All'
+    Test-GraphGet 'Teams (groups) and group settings'        'v1.0/groupSettings'                                                 'Group.Read.All, Directory.Read.All'
+    Test-GraphGet 'SharePoint tenant sharing settings'       'v1.0/admin/sharepoint/settings'                                     'SharePointTenantSettings.Read.All plus SharePoint Administrator or Global Reader'
+    $null = Get-GraphReportCsv "getOffice365ActiveUserCounts(period='D7')" 'permission test report'
+    Add-PermResult 'Usage reports (Teams, SharePoint, OneDrive)' $(if (Get-GraphFailure 'permission test report') { 'NO PERMISSION' } else { 'OK' }) $(if (Get-GraphFailure 'permission test report') { "Reports.Read.All plus Reports Reader or Global Reader. $(Get-GraphFailure 'permission test report')" } else { '' })
+    function Test-ResourceToken { param([string]$Cap, [string]$ScopeStr, [string]$Needs)
+        if (-not $script:GraphToken -or -not $script:GraphToken.RefreshToken) { Add-PermResult $Cap 'SKIPPED' 'Device-code sign-in has no refresh token; run the browser sign-in to test this'; return $null }
+        try { $tok = Request-ResourceToken $ScopeStr; Add-PermResult $Cap 'OK' ''; return $tok }
+        catch { $m = $_.Exception.Message; try { $b = $_.ErrorDetails.Message; if ($b) { $j = $b | ConvertFrom-Json; if ($j.error_description) { $m = ([string]$j.error_description -split "`r?`n")[0] } } } catch { Write-Verbose 'Token error body was not JSON.' }; Add-PermResult $Cap $(if ($m -match 'AADSTS65001|AADSTS650|consent') { 'NOT CONSENTED' } else { 'FAILED' }) "$Needs. $m"; return $null }
+    }
+    $exoTok   = Test-ResourceToken 'Exchange Online single sign-on'          'https://outlook.office365.com/.default' 'Office 365 Exchange Online > Exchange.Manage (delegated); without it a second sign-in prompt appears'
+    $null     = Test-ResourceToken 'Teams admin API (tenant Teams policies)' '48ac35b8-9aa8-4d74-927d-1f4a14a0b239/.default' 'Skype and Teams Tenant Admin API > user_impersonation (delegated); optional, also needs the MicrosoftTeams module'
+    $mdeTok   = Test-ResourceToken 'Defender for Endpoint API consent'      'https://api.securitycenter.microsoft.com/Machine.Read https://api.securitycenter.microsoft.com/Software.Read https://api.securitycenter.microsoft.com/Vulnerability.Read' 'WindowsDefenderATP > Machine.Read, Software.Read, Vulnerability.Read (delegated)'
+    if ($mdeTok) {
+        try { Invoke-RestMethod -Method Get -Uri 'https://api.securitycenter.microsoft.com/api/machines?$top=1' -Headers @{ Authorization = "Bearer $mdeTok" } -ErrorAction Stop | Out-Null; Add-PermResult 'Defender for Endpoint licence' 'OK' '' }
+        catch { $m = $_.Exception.Message; try { $b = $_.ErrorDetails.Message; if ($b) { $j = $b | ConvertFrom-Json; if ($j.error.message) { $m = $j.error.message } } } catch { Write-Verbose 'Defender error body was not JSON.' }; Add-PermResult 'Defender for Endpoint licence' $(if ($m -match '(?i)licen[cs]e') { 'NOT LICENSED' } else { 'FAILED' }) "Defender for Business or Defender for Endpoint P1/P2. $m" }
+    }
+    Add-PermResult 'ExchangeOnlineManagement module' $(if (Get-Module -ListAvailable ExchangeOnlineManagement) { 'OK' } else { 'MISSING' }) $(if (Get-Module -ListAvailable ExchangeOnlineManagement) { '' } else { 'Install-Module ExchangeOnlineManagement -Scope CurrentUser (a normal run installs it)' })
+    Add-PermResult 'MicrosoftTeams module (optional)'   $(if (Get-Module -ListAvailable MicrosoftTeams) { 'OK' } else { 'MISSING' }) $(if (Get-Module -ListAvailable MicrosoftTeams) { '' } else { 'Install-Module MicrosoftTeams -Scope CurrentUser to include tenant-wide Teams policies' })
+    if ($exoTok -and (Get-Module -ListAvailable ExchangeOnlineManagement)) {
+        try {
+            Import-Module ExchangeOnlineManagement -ErrorAction Stop
+            Connect-ExchangeOnline -AccessToken $exoTok -UserPrincipalName $ctx.Account -ShowBanner:$false -ErrorAction Stop
+            Add-PermResult 'Exchange Online connection (token)' 'OK' ''
+            $cfg = Get-AdminAuditLogConfig
+            Add-PermResult 'Unified audit log turned on' $(if ($cfg.UnifiedAuditLogIngestionEnabled) { 'OK' } else { 'TURNED OFF' }) $(if ($cfg.UnifiedAuditLogIngestionEnabled) { '' } else { 'Purview portal > Audit > Start recording user and admin activity (or Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true)' })
+            try { Search-UnifiedAuditLog -StartDate (Get-Date).AddDays(-1) -EndDate (Get-Date) -ResultSize 1 -ErrorAction Stop | Out-Null; Add-PermResult 'Audit log search role' 'OK' '' }
+            catch { Add-PermResult 'Audit log search role' 'NO PERMISSION' "View-Only Audit Logs or Audit Logs role in Exchange Online. $($_.Exception.Message)" }
+            if ($script:HasDefenderP1 -or (Get-Command Get-SafeLinksDetailReport -ErrorAction SilentlyContinue)) { try { Get-SafeLinksDetailReport -StartDate (Get-Date).AddDays(-1) -EndDate (Get-Date) -PageSize 1 -ErrorAction Stop | Out-Null; Add-PermResult 'Safe Links click report' 'OK' '' } catch { Add-PermResult 'Safe Links click report' 'NOT LICENSED' "Defender for Office 365 Plan 1 or 2. $($_.Exception.Message)" } }
+        } catch { Add-PermResult 'Exchange Online connection (token)' 'FAILED' $_.Exception.Message }
+        finally { try { Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch { Write-Verbose 'Exchange Online session was already closed.' } }
+    }
+    $script:permResults | Format-Table -AutoSize -Wrap | Out-String -Width 230 | Write-Host
+    $bad = @($script:permResults | Where-Object { $_.Result -ne 'OK' })
+    if ($bad.Count) { Write-Host "$($bad.Count) item(s) need attention; see 'Needs / fix'. Items marked NOT LICENSED are licence gaps, not permission problems. Admin consent for the connector: https://login.microsoftonline.com/$($ctx.TenantId)/adminconsent?client_id=$($script:GraphClientId)" -ForegroundColor Yellow }
+    else { Write-Host 'Everything the report uses is available.' -ForegroundColor Green }
+    return
+}
+
 $IssueCatalog = @{
     'mfa-not-enforced'     = @{ Title = 'MFA is not enforced for every user';                 Why = 'Passwords alone are the most common way attackers get into Microsoft 365. Without enforced MFA a single phished or reused password gives full mailbox and file access, and examiners expect MFA for all users.'; Fix = 'Create an enabled Conditional Access policy that requires MFA (or a phishing-resistant authentication strength) for all users and all cloud apps with a monitored break-glass exclusion, or turn on security defaults if Entra ID P1 is not licensed.' }
     'mfa-not-registered'   = @{ Title = 'Some users have no MFA method registered';           Why = 'A user who has never registered a method cannot be protected by an MFA policy and is the account an attacker will target first.'; Fix = 'Run a registration campaign, require Microsoft Authenticator or a FIDO2 key, and block sign-in for accounts that have not registered after the deadline.' }
@@ -621,6 +681,7 @@ $IssueCatalog = @{
     'ioc-mass-download'    = @{ Title = 'Unusually high number of files downloaded';          Why = 'Hundreds of downloads or a full OneDrive sync in a few days from one account is how data walks out, whether through an intruder with a tool such as rclone or an employee about to leave.'; Fix = 'Ask the user and their manager what the downloads were for; check the IP addresses and client against their normal device; if unexplained, revoke sessions, reset the password and preserve the audit records. Restrict sync to managed devices.' }
     'ioc-audit-rule-change' = @{ Title = 'Mailbox rule, forwarding or permission change recorded'; Why = 'The audit log shows who created a rule that forwards, deletes or hides mail, or who granted mailbox access, from which address and client, including rules that were created and later removed.'; Fix = 'Compare the actor, IP address and client with the mailbox owner''s normal pattern; if it was not the owner from a known device, treat the mailbox as compromised.' }
     'ioc-url-click'        = @{ Title = 'User clicked a malicious link';                      Why = 'Safe Links blocked or warned about the destination; a user who clicked through may have typed their password into a phishing page.'; Fix = 'Contact the user, reset the password if they entered it, revoke sessions and check for new MFA methods and inbox rules. Use the event for awareness training.' }
+    'ual-off'              = @{ Title = 'Unified audit log is turned off';                     Why = 'With audit logging off, Microsoft 365 keeps no record of who shared, downloaded, forwarded or changed anything. A compromise cannot be investigated or scoped, and examiners have no activity evidence. CIS 3.1.1 and every regulator expect it on.'; Fix = 'Purview portal > Audit > Start recording user and admin activity (or Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true). Recording starts within hours; set retention to at least 180 days, ideally one year.' }
     'guest'                = @{ Title = 'Guest account';                                     Why = 'Guests are external people with access to shared content; stale or unreviewed guests are a common data-leak path.'; Fix = 'Review guests periodically, remove those no longer needed, and consider access reviews or restricting guest invitations.' }
 }
 function New-InfoIcon {
@@ -1217,6 +1278,50 @@ $roles = Get-GraphAllSafe 'v1.0/directoryRoles?$expand=members' 'directory roles
 $AdminIds = @{}; foreach ($r in $roles) { foreach ($m in @($r.members)) { if ($m.id) { $AdminIds[$m.id] = $true } } }
 $regDetails = Get-GraphAllSafe 'v1.0/reports/authenticationMethods/userRegistrationDetails?$top=999' 'MFA registration details'
 $RegMap = @{}; foreach ($r in $regDetails) { $RegMap[$r.id] = $r }
+$script:RegFromMethods = $false
+if (-not @($regDetails).Count -and @($users).Count) {
+    # Without Entra ID P1 the registration report is refused; build the same facts from each user's authentication methods
+    # (UserAuthenticationMethod.Read.All) with Graph $batch requests of 20.
+    $regTargets = @($users | Where-Object { $_.accountEnabled -and $_.userType -eq 'Member' } | Select-Object -First 3000)
+    Write-Host "Registration report unavailable (Entra ID P1); reading authentication methods for $($regTargets.Count) accounts instead..." -ForegroundColor Cyan
+    $MethodTypeMap = @{ 'fido2AuthenticationMethod' = 'fido2SecurityKey'; 'microsoftAuthenticatorAuthenticationMethod' = 'microsoftAuthenticatorPush'; 'windowsHelloForBusinessAuthenticationMethod' = 'windowsHelloForBusiness'; 'softwareOathAuthenticationMethod' = 'softwareOneTimePasscode'; 'hardwareOathAuthenticationMethod' = 'hardwareOneTimePasscode'; 'emailAuthenticationMethod' = 'email'; 'temporaryAccessPassAuthenticationMethod' = 'temporaryAccessPass'; 'platformCredentialAuthenticationMethod' = 'passKeyDeviceBound'; 'x509CertificateAuthenticationMethod' = 'x509Certificate'; 'externalAuthenticationMethod' = 'externalAuthMethod' }
+    $regFallback = New-Object System.Collections.Generic.List[object]; $regBatchFailed = $false
+    for ($bi = 0; $bi -lt $regTargets.Count -and -not $regBatchFailed; $bi += 20) {
+        $chunk = @($regTargets[$bi..([Math]::Min($bi + 19, $regTargets.Count - 1))])
+        $reqs = @(); $rn = 0; foreach ($u in $chunk) { $rn++; $reqs += @{ id = "$rn"; method = 'GET'; url = "/users/$($u.id)/authentication/methods" } }
+        try {
+            Confirm-GraphToken
+            $resp = Invoke-MgGraphRequest -Method POST -Uri 'v1.0/$batch' -Body (@{ requests = $reqs } | ConvertTo-Json -Depth 5) -ContentType 'application/json' -OutputType PSObject -ErrorAction Stop
+            $rn = 0
+            foreach ($u in $chunk) {
+                $rn++
+                $r = @($resp.responses | Where-Object { [string]$_.id -eq "$rn" }) | Select-Object -First 1
+                if (-not $r -or [int]$r.status -ge 400) {
+                    if ($r -and [int]$r.status -in @(401, 403)) { $regBatchFailed = $true; $script:GraphFailures['MFA registration details'] = "authentication methods per user returned HTTP $($r.status): UserAuthenticationMethod.Read.All not consented, or the account lacks an authentication administrator / Global Reader role." }
+                    continue
+                }
+                $methods = @()
+                foreach ($m in @($r.body.value)) {
+                    $mt = ([string]$m.'@odata.type') -replace '^#microsoft\.graph\.', ''
+                    if ($mt -eq 'passwordAuthenticationMethod') { continue }
+                    if ($mt -eq 'phoneAuthenticationMethod') { $methods += $(switch ([string]$m.phoneType) { 'office' { 'officePhone' } 'alternateMobile' { 'alternateMobilePhone' } default { 'mobilePhone' } }) }
+                    elseif ($mt -eq 'fido2AuthenticationMethod' -and ([string]$m.model) -match 'Authenticator|Microsoft') { $methods += 'passKeyDeviceBoundAuthenticator' }
+                    elseif ($MethodTypeMap.ContainsKey($mt)) { $methods += $MethodTypeMap[$mt] }
+                    elseif ($mt) { $methods += $mt }
+                }
+                $methods = @($methods | Select-Object -Unique)
+                $mfaReg = @($methods | Where-Object { $_ -notin @('email', 'securityQuestion', 'temporaryAccessPass') }).Count -gt 0
+                $pwdless = @($methods | Where-Object { $_ -in @('fido2SecurityKey', 'passKeyDeviceBoundAuthenticator', 'passKeyDeviceBound', 'windowsHelloForBusiness', 'x509Certificate') }).Count -gt 0
+                $regFallback.Add([pscustomobject]@{ id = $u.id; userPrincipalName = $u.userPrincipalName; userDisplayName = $u.displayName; isMfaRegistered = $mfaReg; isMfaCapable = $mfaReg; isPasswordlessCapable = $pwdless; methodsRegistered = $methods; defaultMfaMethod = 'none'; isAdmin = $AdminIds.ContainsKey($u.id) })
+            }
+        } catch { $regBatchFailed = $true; $script:GraphFailures['MFA registration details'] = "authentication methods per user: $(Get-GraphErrorText $_)"; Write-Warning "Could not read authentication methods per user: $(Get-GraphErrorText $_)" }
+    }
+    if (-not $regBatchFailed -and $regFallback.Count) {
+        $regDetails = @($regFallback); $script:GraphFailures.Remove('MFA registration details'); $script:RegFromMethods = $true
+        $RegMap = @{}; foreach ($r in $regDetails) { $RegMap[$r.id] = $r }
+        Write-Host "  Registration facts built for $($regDetails.Count) accounts from their authentication methods (Entra ID Free fallback)." -ForegroundColor DarkGray
+    }
+}
 $UserById = @{}; foreach ($u in $users) { $UserById[$u.id] = $u }
 
 # One device list: every Entra ID device object joined with its Intune record (plus Intune devices with no Entra object).
@@ -1495,6 +1600,7 @@ $mfaProduct = if ($eamConfigs.Count) { "Third-party MFA through Entra external a
               else { 'Microsoft Entra multifactor authentication (Microsoft Authenticator and the methods below)' }
 $topMethod = if ($methodCountRows.Count) { $methodCountRows[0]['Method'] } else { 'Not available' }
 $mfaProductKv = [ordered]@{
+    'Registration data source'                         = $(if ($script:RegFromMethods) { 'Per-user authentication methods (Entra ID Free; the registration report needs Entra ID P1)' } elseif (@($regDetails).Count) { 'Entra ID registration report (userRegistrationDetails)' } else { 'Not available' })
     'MFA product in use'                               = $mfaProduct
     'Most registered method'                           = $topMethod
     'Default MFA method (most common)'                 = $(if ($regEnabled.Count) { $d = @($regEnabled | ForEach-Object { [string]$_.defaultMfaMethod } | Where-Object { $_ -and $_ -ne 'none' } | Group-Object | Sort-Object Count -Descending | Select-Object -First 1); if ($d) { "$(if ($MethodLabels.Contains($d[0].Name)) { $MethodLabels[$d[0].Name] } else { $d[0].Name }) ($($d[0].Count) users)" } else { 'Not set' } } else { 'Not available' })
@@ -1801,15 +1907,18 @@ $emailAuthRows = @($emailAuthRows)
 $spfBad   = @($emailAuthRows | Where-Object { $_['SPF'] -ne 'Hard fail (-all)' })
 $dkimBad  = @($emailAuthRows | Where-Object { $_['DKIM signing (Exchange)'] -ne 'Enabled' -or $_['DKIM DNS (selector1 / selector2)'] -ne 'Both selectors published' })
 $dmarcBad = @($emailAuthRows | Where-Object { $_['DMARC policy'] -notin @('reject', 'quarantine') })
-function Get-EmailAuthStatus { param($Bad, [switch]$AnyRecordCountsAsPartial)
+function Get-EmailAuthStatus { param($Bad, [scriptblock]$HasRecord)
+    # Complete: every domain passes. Partial: some pass, or a record exists but is weak. Missing: no domain has the record at all.
     if (-not $dnsAvailable) { return 'Not available' }
     if ($emailAuthRows.Count -eq 0) { return 'No email domains' }
     if ($Bad.Count -eq 0) { return 'Complete' }
     if ($Bad.Count -lt $emailAuthRows.Count) { return 'Partial' }
-    if ($AnyRecordCountsAsPartial -and @($Bad | Where-Object { $_['DMARC policy'] -ne 'Missing' }).Count) { return 'Partial' }
+    if ($HasRecord -and @($Bad | Where-Object $HasRecord).Count) { return 'Partial' }
     return 'Missing'
 }
-$spfStatus = Get-EmailAuthStatus $spfBad; $dkimStatus = Get-EmailAuthStatus $dkimBad; $dmarcStatus = Get-EmailAuthStatus $dmarcBad -AnyRecordCountsAsPartial
+$spfStatus   = Get-EmailAuthStatus $spfBad   { $_['SPF'] -ne 'Missing' }
+$dkimStatus  = Get-EmailAuthStatus $dkimBad  { $_['DKIM signing (Exchange)'] -eq 'Enabled' -or $_['DKIM DNS (selector1 / selector2)'] -ne 'Not published' }
+$dmarcStatus = Get-EmailAuthStatus $dmarcBad { $_['DMARC policy'] -ne 'Missing' }
 
 # ----------------------------------------------------------------------------------------------
 # Defender for Endpoint (separate API; delegated token for the same user, only after a browser sign-in)
@@ -1852,6 +1961,7 @@ elseif ($script:GraphToken -and $script:GraphToken.RefreshToken) {
         $msg = $_.Exception.Message
         try { $body = $_.ErrorDetails.Message; if ($body) { $j = $body | ConvertFrom-Json; if ($j.error_description) { $msg = "$msg $($j.error_description)" } elseif ($j.error.message) { $msg = "$msg $($j.error.message)" } } } catch { Write-Verbose 'Defender error body was not JSON.' }
         $mdeNote = if ($msg -match 'AADSTS65001|AADSTS650|consent') { "The Defender for Endpoint permissions (Machine.Read, Software.Read, Vulnerability.Read) have not been consented for this app in the tenant. A Global Administrator can grant them at https://login.microsoftonline.com/$($ctx.TenantId)/adminconsent?client_id=$ClientId" } elseif ($msg -match '403|Forbidden|Unauthorized|401') { "Defender for Endpoint API refused the request ($($msg -replace '\s+', ' ')). The tenant is not licensed for Defender for Endpoint / Defender for Business, or the signed-in account lacks a Defender role (Security Reader)." } else { "Not collected: $($msg -replace '\s+', ' ')" }
+        if ($msg -match '(?i)no active license|not licensed') { $script:HasMDE = $false; $mdeNote = 'Not licensed: the Defender for Endpoint API reports no active licence for this tenant (the subscription includes Defender for Office 365 but not Defender for Endpoint / Defender for Business device onboarding).' }
         Write-Warning "Defender for Endpoint: $mdeNote"
     }
 } else { $mdeNote = 'Not collected: device-code sign-in was used (no refresh token for the Defender API).' }
@@ -2358,6 +2468,8 @@ Add-SummaryRow 'Privileged role assignments' "$(@($roleRows).Count) assignments"
 
 Add-SummaryRow 'Indications of compromise to review' $iocStatus $iocEvidence 'Indications of Compromise'
 
+Add-SummaryRow 'Audit logging (unified audit log)' $(if (-not $exoCollected) { 'Not collected' } elseif ($null -eq $ualEnabled) { 'Not available' } elseif ($ualEnabled) { 'Enabled' } else { 'Disabled' }) $(if (-not $exoCollected) { 'Exchange Online was not collected.' } elseif ($null -eq $ualEnabled) { 'Get-AdminAuditLogConfig could not be read.' } elseif ($ualEnabled) { "Unified audit log ingestion is on; mailbox auditing is $(if ($mailboxAuditDisabled) { 'disabled' } else { 'enabled' }) organization-wide." } else { 'Unified audit log ingestion is turned off. Sharing, downloads, mailbox rules and administrator actions are not being recorded, so a compromise cannot be investigated and examiners have no activity evidence.' }) 'Indications of Compromise'
+
 Add-SummaryRow 'Teams guest and external access' $teamsStatus $teamsEvidence 'Teams'
 
 Add-SummaryRow 'SharePoint and OneDrive external sharing' $spoStatus $spoEvidence 'SharePoint'
@@ -2419,6 +2531,7 @@ $FrameworkMap = @{
     'Indications of compromise to review'          = @{ Nist = 'DE.CM-01, DE.CM-03 (personnel activity monitored), DE.AE-02, DE.AE-06, RS.MA-01'; Cis365 = '6.1 Mailbox auditing; 5.2.2 sign-in and user risk policies; 3.x Purview audit'; CisV8 = '8.2, 8.5, 8.11 (collect, enrich, review audit logs), 17.x Incident response'; Ffiec = 'CAT/ACET D3.DC.An Anomalous Activity Detection, D3.DC.Ev Event Detection, D5.IR Incident Response; Authentication Guidance (2021): monitoring and logging' }
     'Teams guest and external access'              = @{ Nist = 'PR.AA-05, GV.SC-05 (third-party access), PR.DS-01'; Cis365 = '8.2 External access and unmanaged accounts; 8.5 Meeting policies (anonymous join, lobby); 5.1.6 Guest user settings; 1.2.1 Public groups'; CisV8 = '3.3 (data access control), 6.8'; Ffiec = 'CAT/ACET D3.PC.Am; D4.C Connections (third-party connectivity)' }
     'SharePoint and OneDrive external sharing'     = @{ Nist = 'PR.DS-01, PR.DS-02, PR.AA-05, PR.DS-10'; Cis365 = '7.2.3 External content sharing restricted; 7.2.5 Guests cannot re-share; 7.2.6 Sharing domain allow list; 7.2.7 Default link type; 7.3.2 OneDrive sync for unmanaged devices'; CisV8 = '3.3, 3.10, 6.8'; Ffiec = 'CAT/ACET D3.PC.Am; IT Handbook Information Security: Data classification and sharing' }
+    'Audit logging (unified audit log)'            = @{ Nist = 'PR.PS-04 (log records generated and available), DE.CM-01, DE.CM-03, DE.CM-09, RS.AN-03'; Cis365 = '3.1.1 Ensure Microsoft 365 audit log search is enabled; 6.1.1 Mailbox auditing'; CisV8 = '8.2 (collect audit logs), 8.5 (detailed logs), 8.10 (retain logs)'; Ffiec = 'CAT/ACET D3.DC.Ev Event Detection, D2.MA Monitoring and Analysing; IT Handbook Information Security: Log management; Authentication Guidance (2021): logging and monitoring' }
     'Usage report names are concealed'             = @{ Nist = 'ID.AM-01, ID.AM-03 (data flows and ownership), DE.CM-03'; Cis365 = 'n/a (reporting prerequisite)'; CisV8 = '1.1, 3.2 (data inventory)'; Ffiec = 'CAT/ACET D1.G.Ov Oversight: management information' }
     'Intune is not licensed'                       = @{ Nist = 'ID.AM-01, PR.PS-01'; Cis365 = 'n/a (licensing prerequisite)'; CisV8 = '1.1, 4.1'; Ffiec = 'CAT/ACET D3.PC.De' }
     'Entra ID P1 is not licensed'                  = @{ Nist = 'PR.AA-03, DE.CM-03'; Cis365 = 'n/a (licensing prerequisite for Conditional Access and sign-in logs)'; CisV8 = '6.3, 8.2'; Ffiec = 'Authentication Guidance (2021): risk-based controls' }
@@ -2586,6 +2699,12 @@ $Playbooks = @{
         'Access control: Unmanaged devices = Allow limited, web-only access; Idle session sign-out = On (warn 55 min, sign out 60); Apps that do not use modern authentication = Block.',
         'OneDrive: Sync allowed only on domain-joined or compliant PCs; set deleted-user OneDrive retention to the minimum policy allows and assign a manager for departed staff.',
         'Review the users in section 17 who shared externally and the inactive or ownerless sites; archive or delete what is no longer needed.'); Verify = 'Section 17 shows the sharing level as guests only (no Anyone links), domain restriction on, idle sign-out on, unmanaged sync restricted.' }
+    'Audit logging (unified audit log)' = @{ Owner = 'IT provider / MSP with Global Administrator or Compliance Administrator'; Effort = 'Ten minutes; recording starts within hours'; Prereq = 'None (included in every Microsoft 365 business plan)'; Steps = @(
+        'Open the Microsoft Purview portal (purview.microsoft.com) > Solutions > Audit. If the banner "Start recording user and admin activity" appears, click it.',
+        'Alternatively in Exchange Online PowerShell: Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true.',
+        'Confirm mailbox auditing is on as well: Get-OrganizationConfig | Select AuditDisabled should be False.',
+        'Set retention: Audit (Standard) keeps 180 days; with Microsoft 365 E5 or the Audit Premium add-on create a retention policy for one year. Examiners commonly ask for 12 months.',
+        'Re-run this report after 24 hours; the Review These Now section will then show sharing, download and mailbox-rule activity.'); Verify = 'Section 3 row "Audit logging (unified audit log)" reads Enabled and the audit-log rows in section 2 stop saying Not checked.' }
     'Usage report names are concealed' = @{ Owner = 'IT provider / MSP with Global Administrator'; Effort = 'Five minutes'; Prereq = 'Global Administrator'; Steps = @(
         'Microsoft 365 admin center (admin.microsoft.com) > Settings > Org settings > Services tab > Reports.',
         'Clear "Display concealed user, group, and site names in all reports" and Save.',
@@ -2633,6 +2752,7 @@ $PhaseByPriority = @{ 'Critical' = 'Now: this week'; 'High' = 'Next 30 days'; 'M
 $PhaseOrder = @('Now: this week', 'Next 30 days', 'Next 90 days', 'Next 12 months and ongoing')
 
 $remediationGuides = @(
+    @{ Control = 'Audit logging (unified audit log)';             Bad = '^Disabled';               Priority = 'Critical'; Action = 'Turn on auditing today: Microsoft Purview portal > Audit > "Start recording user and admin activity" (or Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true in Exchange Online PowerShell). Recording begins within a few hours and nothing before that can be recovered; every investigation and most examiner requests depend on it.'; Url = 'https://purview.microsoft.com/audit/auditsearch' }
     @{ Control = 'Indications of compromise to review';          Bad = '^\d+ urgent';              Priority = 'Critical'; Action = 'Today: take every item marked urgent in the Indications of Compromise section to the person named and confirm it was expected. Anything unexplained is a security incident: reset the password, revoke sessions, remove the rule, credential or setting, and engage your IT provider or incident response contact.'; Url = 'https://security.microsoft.com/incidents' }
     @{ Control = 'Indications of compromise to review';          Bad = '^\d+ to review';           Priority = 'High';     Action = 'Within the week, match every item in the Indications of Compromise section (role assignments, MFA changes, password resets, policy changes, new apps, new accounts, delegates, multi-country sign-ins) to a change ticket or a confirmation from the person involved. Escalate anything nobody can account for.'; Url = 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/AuditLogsMenuBlade/~/Audit' }
     @{ Control = 'SharePoint and OneDrive external sharing';     Bad = '^Anyone links';            Priority = 'High';     Action = 'In the SharePoint admin center set external sharing for SharePoint and OneDrive to "New and existing guests" (or stricter), expire existing Anyone links, set the default link type to "People you choose", and restrict sharing to approved partner domains.'; Url = 'https://admin.microsoft.com/sharepoint?page=sharing&modern=true' }
@@ -2679,6 +2799,7 @@ $ControlPortalUrl = @{
     'Endpoint protection (Defender for Endpoint)'                = 'https://security.microsoft.com/machines'
     'Microsoft Secure Score'                                     = 'https://security.microsoft.com/securescore'
     'Security defaults'                                          = 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/ActiveDirectoryMenuBlade/~/Properties'
+    'Audit logging (unified audit log)'                          = 'https://purview.microsoft.com/audit/auditsearch'
 }
 foreach ($g in $remediationGuides) {
     $row = $script:summaryRows | Where-Object { $_.Control -eq $g.Control } | Select-Object -First 1
@@ -2729,6 +2850,11 @@ nav h1{font-size:14pt;color:var(--blue);margin:0 0 4px}nav .sub{font-size:9pt;co
 nav a{display:block;color:var(--ink);text-decoration:none;padding:6px 8px;border-radius:4px;font-size:10.5pt}nav a:hover{background:#e1e9f1}
 nav a.l2{padding-left:22px;font-size:10pt;color:#333}nav img.logo{width:130px;display:block;margin:0 0 10px}nav .sub a,.privacy a,footer.brand a{color:var(--blue)}footer.brand{margin-top:48px;padding-top:14px;border-top:1px solid var(--line);font-size:9.5pt;color:#555;display:flex;gap:14px;align-items:center}footer.brand img.logo{width:70px}
 main{margin-left:260px;padding:28px 40px 60px;max-width:1500px}
+nav a.active{background:var(--blue);color:#fff}nav a.active:hover{background:var(--blue)}
+body.paged main>section{display:none}body.paged main>section.active{display:block}
+.pager{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid var(--line);display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:8px 0 10px;margin:-14px 0 18px}
+.pager button{font:inherit;font-size:9.5pt;border:1px solid var(--blue);background:#fff;color:var(--blue);border-radius:4px;padding:4px 12px;cursor:pointer}.pager button:disabled{opacity:.45;cursor:default}.pager button.primary{background:var(--blue);color:#fff}
+.pager .pos{font-size:9.5pt;color:#555;margin-left:auto}.pager .title{font-size:10.5pt;color:var(--blue);font-weight:bold}
 section{margin-bottom:48px;scroll-margin-top:12px}
 h2{font-size:20pt;color:var(--blue);border-bottom:2px solid var(--blue);padding-bottom:4px;margin:0 0 14px}
 h3{font-size:13pt;color:var(--blue);margin:26px 0 8px}h3.platform{margin-top:34px;padding:6px 10px;background:#eef3f8;border-left:4px solid var(--blue)}
@@ -2776,7 +2902,7 @@ details.info .tip p{margin:6px 0 0}
 .modal-head button,.modal-actions button{font:inherit;font-size:9.5pt;border:1px solid var(--blue);background:var(--blue);color:#fff;border-radius:4px;padding:4px 12px;cursor:pointer}.modal-head button{background:#fff;color:var(--blue)}
 .modal pre{margin:0;padding:12px 14px;overflow:auto;white-space:pre-wrap;word-break:break-word;font:10pt Consolas,monospace;flex:1 1 auto;background:#fafafa}.modal-actions{display:flex;gap:12px;align-items:center;padding:10px 14px;border-top:1px solid var(--line)}.modal-actions .hint{font-size:9pt;color:#555}body.noscroll{overflow:hidden}
 .privacy{background:#eef6ee;border:1px solid #bfe0c2;border-left:5px solid var(--good);padding:10px 14px;border-radius:4px;font-size:10pt;margin:16px 0}
-@media print{nav{display:none}.ticketbar,button.tk,.modal{display:none}main{margin:0;padding:0}section{page-break-before:always}section:first-of-type{page-break-before:avoid}table.grid thead th{position:static}.filters{display:none}details.info .tip{position:static;display:block;width:auto;box-shadow:none;margin-top:4px}details.info summary{display:none}details.info:not([open]) .tip{display:none}}
+@media print{nav,.pager{display:none}body.paged main>section{display:block}.ticketbar,button.tk,.modal{display:none}main{margin:0;padding:0}section{page-break-before:always}section:first-of-type{page-break-before:avoid}table.grid thead th{position:static}.filters{display:none}details.info .tip{position:static;display:block;width:auto;box-shadow:none;margin-top:4px}details.info summary{display:none}details.info:not([open]) .tip{display:none}}
 "@
 
 $sections = @(
@@ -2821,7 +2947,7 @@ if ($null -ne $scoreCurrent -and $scoreCurrent -lt $scoreTarget) { $tenantIssues
 # ---- Flag configuration issues on rows and key/value tables (rendered as clickable (i) icons)
 $SummaryIssueMap = @{
     'Phishing-resistant MFA (passkeys) rollout' = 'passkey-not-started'; 'Phishing-resistant MFA for administrators' = 'passkey-admins'
-    'Indications of compromise to review' = 'ioc-review'; 'Teams guest and external access' = 'groups-guests-open'; 'SharePoint and OneDrive external sharing' = 'spo-external-sharing'
+    'Indications of compromise to review' = 'ioc-review'; 'Audit logging (unified audit log)' = 'ual-off'; 'Teams guest and external access' = 'groups-guests-open'; 'SharePoint and OneDrive external sharing' = 'spo-external-sharing'
     'MFA enforced for sign-in' = 'mfa-not-enforced'; 'MFA registered by all users' = 'mfa-not-registered'; 'Legacy authentication protocols disabled' = 'legacy-auth'
     'Conditional Access restricts access to Entra joined or compliant devices' = 'device-ca'; 'Intune deployed to Windows computers' = 'intune-coverage'
     'Intune compliance policies' = 'compliance-none'; 'Intune compliance policies for mobile devices' = 'compliance-none'; 'Intune configuration and security policies' = 'config-none'; 'Temporary Access Pass (TAP) implemented' = 'tap-disabled'
@@ -3370,6 +3496,7 @@ $html = @"
 <body>
 <nav>$($navHtml.ToString())</nav>
 <main>
+<div class='pager'><button type='button' id='prevSec' title='Previous section'>&larr; Previous</button><button type='button' id='nextSec' title='Next section'>Next &rarr;</button><span class='title' id='pagerTitle'></span><span class='pos' id='pagerPos'></span><button type='button' id='viewToggle' title='Switch between one section per page and the whole report on one page'>Show all sections</button></div>
 <section id='overview'><h2>1. Executive Summary</h2>
 <p class='exec'>$execNarrative</p>
 <p class='legend'><span class='i'>i</span> marks a configuration issue anywhere in this report. Click the icon to read why it matters and what to do about it.</p>
@@ -3583,6 +3710,43 @@ $spoSectionHtml
     });
   }
   window.addEventListener('beforeprint', function(){ document.querySelectorAll('details.steps').forEach(function(d){ d.setAttribute('open',''); }); });
+  // Paged view: the navigation shows one section at a time; "Show all sections" restores the single long page.
+  var mainEl=document.querySelector('main');
+  var sections=Array.prototype.slice.call(document.querySelectorAll('main > section'));
+  var navLinks=Array.prototype.slice.call(document.querySelectorAll('nav a[href^="#"]'));
+  var viewToggle=document.getElementById('viewToggle'), prevBtn=document.getElementById('prevSec'), nextBtn=document.getElementById('nextSec'), pagerTitle=document.getElementById('pagerTitle'), pagerPos=document.getElementById('pagerPos');
+  var paged=true; try{ paged = (localStorage.getItem('audithat-view')!=='all'); }catch(e){}
+  function sectionFor(id){ var el=document.getElementById(id); if(!el) return null; var sec=el; while(sec&&sec!==mainEl&&!(sec.tagName==='SECTION'&&sec.parentNode===mainEl)){ sec=sec.parentNode; } return (sec&&sec!==mainEl)?sec:null; }
+  function showSection(sec, targetId){
+    if(!sec) return;
+    sections.forEach(function(s){ s.classList.toggle('active', s===sec); });
+    navLinks.forEach(function(a){ a.classList.toggle('active', a.getAttribute('href')==='#'+sec.id); });
+    var idx=sections.indexOf(sec), h=sec.querySelector('h2');
+    if(pagerTitle) pagerTitle.textContent = h?h.textContent:'';
+    if(pagerPos) pagerPos.textContent='Section '+(idx+1)+' of '+sections.length;
+    if(prevBtn) prevBtn.disabled=(idx<=0); if(nextBtn) nextBtn.disabled=(idx>=sections.length-1);
+    if(targetId&&targetId!==sec.id){ var t=document.getElementById(targetId); if(t){ t.scrollIntoView(); window.scrollBy(0,-60); } } else { window.scrollTo(0,0); }
+  }
+  function applyMode(){
+    document.body.classList.toggle('paged', paged);
+    if(viewToggle) viewToggle.textContent = paged?'Show all sections':'One section at a time';
+    if(prevBtn) prevBtn.style.display=paged?'':'none'; if(nextBtn) nextBtn.style.display=paged?'':'none'; if(pagerPos) pagerPos.style.display=paged?'':'none';
+    if(paged){ var id=(location.hash||'#overview').substring(1); var sec=sectionFor(id)||sections[0]; showSection(sec,id); }
+    else { sections.forEach(function(s){ s.classList.add('active'); }); if(pagerTitle) pagerTitle.textContent='Whole report on one page'; navLinks.forEach(function(a){ a.classList.remove('active'); }); }
+  }
+  document.addEventListener('click', function(e){
+    var a=e.target; while(a&&a!==document&&!(a.tagName==='A'&&a.getAttribute('href')&&a.getAttribute('href').charAt(0)==='#')){ a=a.parentNode; }
+    if(!a||a===document||!paged) return;
+    var id=a.getAttribute('href').substring(1); var sec=sectionFor(id); if(!sec) return;
+    e.preventDefault(); try{ history.replaceState(null,'','#'+id); }catch(err){} showSection(sec,id);
+  });
+  window.addEventListener('hashchange', function(){ if(!paged) return; var id=location.hash.substring(1); var sec=sectionFor(id); if(sec) showSection(sec,id); });
+  if(viewToggle) viewToggle.addEventListener('click', function(){ paged=!paged; try{ localStorage.setItem('audithat-view', paged?'paged':'all'); }catch(e){} applyMode(); });
+  if(prevBtn) prevBtn.addEventListener('click', function(){ var i=sections.findIndex(function(s){ return s.classList.contains('active'); }); if(i>0){ try{ history.replaceState(null,'','#'+sections[i-1].id); }catch(err){} showSection(sections[i-1]); } });
+  if(nextBtn) nextBtn.addEventListener('click', function(){ var i=sections.findIndex(function(s){ return s.classList.contains('active'); }); if(i<sections.length-1){ try{ history.replaceState(null,'','#'+sections[i+1].id); }catch(err){} showSection(sections[i+1]); } });
+  window.addEventListener('beforeprint', function(){ document.body.classList.remove('paged'); });
+  window.addEventListener('afterprint', function(){ document.body.classList.toggle('paged', paged); });
+  applyMode();
   // one info panel open at a time; click anywhere else closes it
   document.addEventListener('click', function(e){
     var open=document.querySelectorAll('details.info[open]');

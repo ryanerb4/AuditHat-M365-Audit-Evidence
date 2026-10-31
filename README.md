@@ -69,6 +69,15 @@ same job for the on-premises directory (accounts, groups, privileged access, pas
 objects). Institutions that synchronise AD to Microsoft 365 should run both; this report shows the
 Entra Connect sync status and links to the companion from the overview and the footer.
 
+## Navigating the report
+
+The report opens as a set of pages: the left navigation shows one section at a time, with Previous
+and Next buttons and a "Section n of 18" marker at the top. Every link inside the report (a finding
+in the roadmap, "Progress since last report", a situation-table detail) opens the right page and
+scrolls to the item. **Show all sections** switches to the whole report on one long page for
+scrolling or searching with Ctrl+F, and the choice is remembered in the browser. Printing always
+prints the whole report, with the step-by-step lists expanded.
+
 ## What the report looks like
 
 Screenshots from a sample run (tenant names replaced). Click any image to view it full size.
@@ -123,6 +132,9 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 # Tenant blocks Microsoft's Graph PowerShell app (AADSTS700016)? Use your own app registration (see below)
 .\Get-M365AuditEvidence.ps1 -ClientName "Sample Bank" -ClientId <app id> -TenantId <tenant id>
+
+# Check permissions, licences and modules first (signs in, probes every API the report uses, prints what is missing, writes nothing)
+.\Get-M365AuditEvidence.ps1 -TestPermissions
 
 # Target a specific tenant and output folder, skip the slow inbox-rule scan
 .\Get-M365AuditEvidence.ps1 -TenantId contoso.onmicrosoft.com -OutputFolder C:\Audit\Contoso -SkipInboxRules
@@ -351,6 +363,7 @@ for the approver. The report never guesses.
 | `-OutputFolder` | `.\M365-Audit-Evidence` | Where the report is written |
 | `-AuditDays` | `30` | Directory audit log window; also the window for the Indications of Compromise section (sign-in analysis uses at most 30 days) |
 | `-NoOpen` | off | Do not open the finished report in the default browser |
+| `-TestPermissions` | off | Sign in, probe every Graph endpoint, resource token, module and licence the report depends on, print a table of what is missing (with the permission or licence to add), and exit without collecting |
 | `-SkipAuditLog` | off | Skip the unified audit log search (sharing events, download volumes, mailbox rule and permission changes) that feeds section 2; faster on very large tenants |
 | (none) | | **Version** is printed in the console banner, the report navigation and footer (`2026.10.31` style: year.month.day of the last change). The report links to this GitHub repository for source and updates |
 | `-NoHistory` | off | Do not read or write the per-tenant `<Client> - history.json` file; the progress section then shows only the current run |
@@ -486,7 +499,16 @@ the MSP closed.
 
 **Do we need Windows PowerShell 7, Intune or Entra ID P1?**
 No. Windows PowerShell 5.1 works. Without Intune, P1 or P2 the affected rows say "not licensed" and
-explain what the licence would add; nothing fails.
+explain what the licence would add; nothing fails. Without Entra ID P1 the MFA registration report is
+refused by Microsoft, so the script reads each user's registered authentication methods instead
+(batched, read-only) and still reports MFA registration, the MFA product and the passkey rollout.
+Only the sign-in log, Identity Protection and Conditional Access themselves need P1 or P2.
+
+**How do I check that the connector has every permission before a run?**
+`.\Get-M365AuditEvidence.ps1 -TestPermissions` signs in and probes every API the report uses (Graph
+endpoints, the Exchange, Teams and Defender tokens, usage reports, audit log, modules) and prints a
+table of OK / NO PERMISSION / NOT CONSENTED / NOT LICENSED / MISSING with the exact permission, role,
+licence or module to add. It collects and writes nothing.
 
 **How often should we run it, and can it be scheduled?**
 Monthly, plus before each exam and after any major change. Monthly is frequent enough to catch drift

@@ -31,6 +31,15 @@ First public release.
   anti-phishing, Safe Links, Safe Attachments, Defender for Endpoint devices and scores.
 - Directory synchronization status (Entra Connect, on-premises AD domains, sync server) and a link to
   the companion AuditHat AD Governance Report.
+- `-TestPermissions`: probes every endpoint, token, report, module and licence the report uses and
+  prints what is missing.
+- Entra ID Free fallback: when the P1 registration report is refused, MFA registration, MFA product and
+  passkey facts are built from each user's authentication methods (batched Graph calls).
+- New Critical control "Audit logging (unified audit log)" with playbook when ingestion is off; Defender
+  for Endpoint reports "Not licensed" when the API says so; SPF/DKIM/DMARC read Partial rather than
+  Missing when a weak record exists.
+- Paged navigation: one section per page with Previous / Next, a "Show all sections" toggle (remembered
+  in the browser), in-report links that open the right page, and whole-report printing.
 - Indications of compromise is section 2, directly after the Executive Summary, and opens with a
   situation table (Urgent / Review / Clear / Not checked, what we found, why it matters). New
   indicators: mail forwarded outside the organization, known-abused OAuth applications (matched by
