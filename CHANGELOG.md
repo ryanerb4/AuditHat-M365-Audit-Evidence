@@ -33,6 +33,7 @@ First public release.
   the companion AuditHat AD Governance Report.
 - First page: rocks list their open items as links to the plan; issues, repeat findings and top
   priorities link to their plan row and carry a View ticket button.
+- The signature block was removed from the Executive Summary; governance is recorded in the committee and board minutes.
 - Saved sign-in for scheduled runs: `-SaveSignIn` keeps the refresh token encrypted with Windows DPAPI for
   the current user and PC; later runs sign in silently and keep the rotated token; `-NonInteractive`
   never prompts (exit code 2 when the saved sign-in is unusable); `-ForgetSignIn` removes it;

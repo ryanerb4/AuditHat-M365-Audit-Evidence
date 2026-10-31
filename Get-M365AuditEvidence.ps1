@@ -3159,7 +3159,6 @@ details.info .tip p{margin:6px 0 0}
 .roadmap{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:12px;margin:10px 0 18px}.roadmap .phase{border:1px solid var(--line);border-radius:6px;padding:10px 12px;background:#fff}.roadmap h4{margin:0 0 6px;color:var(--blue);font-size:11pt}.roadmap .n{display:inline-block;background:var(--blue);color:#fff;border-radius:10px;padding:0 8px;font-size:9pt;margin-left:8px}.roadmap ol{margin:0;padding-left:18px;font-size:10pt}.roadmap li{margin:3px 0}
 .muted{color:#555;font-size:9pt}details.steps{margin-top:4px}details.steps summary{cursor:pointer;color:var(--blue);font-size:9.5pt}details.steps ol{margin:4px 0;padding-left:18px;font-size:9.5pt}details.steps p{font-size:9.5pt;margin:4px 0}
 .howto{background:#f3f6f9;border:1px solid var(--line);border-radius:6px;padding:10px 14px;margin:10px 0 16px;font-size:10pt}.howto ul{margin:4px 0 0;padding-left:18px}.howto li{margin:3px 0}
-.signoff{display:flex;gap:24px;flex-wrap:wrap;margin:6px 0 14px}.signoff div{flex:1 1 220px;border-top:1px solid #000;padding-top:4px;font-size:9.5pt;margin-top:30px}
 .modal{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:50}.modal[hidden]{display:none}
 .modal-box{background:#fff;border-radius:8px;max-width:780px;width:92%;max-height:86vh;display:flex;flex-direction:column;box-shadow:0 10px 30px rgba(0,0,0,.3)}
 .modal-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--line)}.modal-head b{font-size:11pt;color:var(--blue)}
@@ -3997,21 +3996,20 @@ $(New-HtmlTable $planRows -Columns 'Phase','Open items','Target date','Owners','
 <details class='more'><summary>How this report serves the annual GLBA board report and the IT examination</summary>
 <p class='meta'>The Interagency Guidelines Establishing Information Security Standards (12 CFR Part 30 / 364 / 208 App. B, D-2; NCUA Part 748 App. A) require management to report to the board at least annually on the overall status of the information security program, covering risk assessment, risk management and control decisions, service provider arrangements, results of testing, security breaches and management responses, and recommendations for changes. This report supplies the Microsoft 365 portion of that evidence each month; core systems, vendors outside Microsoft 365, physical security and the written program remain part of the wider report.</p>
 $(New-HtmlTable $glbaRows -Columns 'Board report element (GLBA Interagency Guidelines)','Where it is in this report')
-<p class='meta'>What examiners look for in board reporting, and where it is here: evidence the board was told (this page, minuted with the sign-off below); decisions the board made (the issues list); findings tracked with owners and dates (rocks, the plan by phase and section 4); closure proven rather than asserted (next report's progress); trends across cycles (the charts); and no repeat findings (the repeat-findings table).</p>
+<p class='meta'>What examiners look for in board reporting, and where it is here: evidence the board was told (this page, minuted); decisions the board made (the issues list); findings tracked with owners and dates (rocks, the plan by phase and section 4); closure proven rather than asserted (next report's progress); trends across cycles (the charts); and no repeat findings (the repeat-findings table).</p>
 </details>
 <details class='more'><summary>Summary in full and how to read this report by role</summary>
 <p class='exec'>$execNarrative</p>
 <div class='howto'><b>How to use this report.</b><ul>
-<li><b>Board:</b> the verdict, the headlines and the scorecard answer three questions: are we secure, are we improving, is there a plan. The sign-off line records that the board was told.</li>
+<li><b>Board:</b> the verdict, the headlines and the scorecard answer three questions: are we secure, are we improving, is there a plan. Minute this page to record that the board was told.</li>
 <li><b>IT committee:</b> the rocks, the issues list and the plan by phase are the agenda; approve owners, dates, licences and policy choices and minute them.</li>
 <li><b>Security officer and IT provider / MSP:</b> work section 2 (review these now) today, then section 4 from the top. Every finding has step-by-step instructions, an owner and an effort estimate, and copies straight into a ticket.</li>
 <li><b>Auditors:</b> section 3 is the control test, section 5 maps each control to NIST CSF 2.0, NIST SP 800-63B, the CIS Microsoft 365 Benchmark, CIS Controls v8 and FFIEC / NCUA expectations, and sections 6 to 19 hold the evidence behind every status.</li>
-<li><b>Examiners:</b> the monthly history, the progress section, the repeat-findings table and the sign-off block show that the institution measures, reviews, plans and improves its Microsoft 365 controls.</li></ul></div>
+<li><b>Examiners:</b> the monthly history, the progress section, the repeat-findings table and the committee minutes show that the institution measures, reviews, plans and improves its Microsoft 365 controls.</li></ul></div>
 </details>
 <div class='privacy'><b>Privacy.</b> This report was generated locally by the free Audit Hat M365 Audit Evidence script ($brandLink) on the computer of the signed-in user. The script reads the tenant with that user's own permissions and writes only to the local output folder. No data is sent to Audit Hat or any third party.</div>
 <h3>Governance and review</h3>
 $(New-KvTable $governanceKv)
-<div class='signoff'><div>Prepared by: $(HtmlEnc $ctx.Account), $($ReportDate.ToString('MMMM d, yyyy'))</div><div>Reviewed by (security officer / IT provider): ______________________ Date: __________</div><div>Presented to IT committee: ______________________ Date: __________</div><div>Noted by the board: ______________________ Date: __________</div></div>
 <h3>Tenant details</h3>
 $(New-KvTable $tenantKv -Issues $tenantIssues)
 <h3>Verified domains</h3>
