@@ -9,8 +9,8 @@
   Sections produced:
     1. Executive Summary (narrative, KPI tiles, top priorities, progress since last report, tenant details)
     2. Security Controls Summary (one computed status per control)
-    3. Remediation Plan (every gap ranked Critical to Low, stable AH- references, Copy ticket, CSV)
-    4. Possible Indications of Compromise (what to research today: audit log, sign-ins, mailbox rules)
+    3. Review These Now: Possible Indications of Compromise (audit log, sign-ins, mailbox rules)
+    4. Remediation Plan (roadmap by phase, playbooks, stable AH- references, View ticket, CSV)
     5. Framework Alignment (every control mapped to NIST CSF 2.0 / SP 800-63B, CIS M365 Benchmark, CIS Controls v8, FFIEC / NCUA)
     6. MDM Compliance Policies        7. Intune Policies           8. Managed Devices
     9. Conditional Access            10. Authentication Methods   11. Enterprise Applications
@@ -560,7 +560,7 @@ $IssueCatalog = @{
     'mde-high-risk'        = @{ Title = 'Device has a high risk score in Defender';        Why = 'Defender has active alerts on this device indicating malware or attacker activity that has not been resolved.'; Fix = 'Investigate the alerts in the Defender portal, isolate the device if needed, and resolve the incidents.' }
     'mde-inactive'         = @{ Title = 'Defender sensor is inactive';                      Why = 'The device has not reported to Defender for Endpoint recently, so it is unprotected by EDR and may be offline, re-imaged or tampered with.'; Fix = 'Confirm the device status; re-onboard or retire it in Defender.' }
     'mde-not-onboarded'    = @{ Title = 'Managed device is not onboarded to Defender for Endpoint'; Why = 'The device is licensed for EDR but not sending telemetry, so threats on it are invisible.'; Fix = 'Deploy the Defender for Endpoint onboarding profile through Intune to all managed devices.' }
-    # ---- Possible indications of compromise (section 4)
+    # ---- Possible indications of compromise (section 3)
     'ioc-urgent'           = @{ Title = 'Urgent indicator: investigate today';                 Why = 'This pattern is one attackers create almost every time they get into a Microsoft 365 account or tenant. It can be legitimate, but it must be confirmed with the people involved before it is dismissed.'; Fix = 'Treat it as a security incident until proven otherwise: confirm with the user or administrator named, reset the password and revoke sessions for the affected account, remove the rule, credential or setting if it is not expected, and record the outcome. Involve your IT provider or incident response contact immediately if you cannot explain it.' }
     'ioc-review'           = @{ Title = 'Review indicator: confirm it was expected';           Why = 'Legitimate administration and attacker activity look the same in the audit log. A quick check with the person who made the change, or the user affected, turns an unknown into evidence.'; Fix = 'Compare each entry with change tickets, help-desk records or the administrator who made it. Anything nobody can account for should be escalated as a possible incident.' }
     'ioc-role-add'         = @{ Title = 'Privileged role assigned recently';                   Why = 'Adding an account to Global Administrator or another privileged role is a standard persistence step after a compromise and also the single most consequential change a legitimate administrator can make.'; Fix = 'Confirm every assignment against a change record. Remove any that are not justified, and use Privileged Identity Management (Entra ID P2) so elevated roles are time-limited and approved.' }
@@ -608,6 +608,7 @@ $IssueCatalog = @{
     'spo-external-shares'  = @{ Title = 'User shared files externally';                       Why = 'Each externally shared file is institutional data outside the tenant. Volume by user shows where review is needed.'; Fix = 'Review what was shared (Purview or the SharePoint sharing reports), confirm business need, and remove sharing that is no longer required.' }
     'passkey-not-started'  = @{ Title = 'Phishing-resistant MFA (passkeys) not rolled out';  Why = 'Push notifications and one-time codes can be relayed by modern phishing kits in real time; passkeys, security keys and Windows Hello cannot. NIST SP 800-63B calls these AAL3 authenticators and CISA recommends them for every organization, starting with administrators and finance.'; Fix = 'Enable the passkey (FIDO2) method, register passkeys for administrators and payment staff first, then all users, and track the percentage in this report each month.' }
     'passkey-admins'       = @{ Title = 'Administrators without phishing-resistant MFA';      Why = 'An administrator phished through a push or code prompt hands the attacker the whole tenant. Administrators are the smallest group and the highest value, so they go first.'; Fix = 'Register a passkey or FIDO2 key for every administrator and require the Phishing-resistant MFA authentication strength through Conditional Access for administrator roles.' }
+    'reports-concealed'    = @{ Title = 'Usage report names are concealed';                  Why = 'The tenant''s report privacy setting replaces user, group and site names with hashes in the Microsoft 365 usage reports, so the OneDrive, SharePoint and Teams inventories in this report cannot show who owns what. Auditors and examiners need the names.'; Fix = 'Microsoft 365 admin center > Settings > Org settings > Services > Reports: clear "Display concealed user, group, and site names in all reports" and save. It is a tenant setting that this read-only script never changes; the next run shows real names.' }
     'guest'                = @{ Title = 'Guest account';                                     Why = 'Guests are external people with access to shared content; stale or unreviewed guests are a common data-leak path.'; Fix = 'Review guests periodically, remove those no longer needed, and consider access reviews or restricting guest invitations.' }
 }
 function New-InfoIcon {
@@ -1703,8 +1704,18 @@ $emailAuthRows = foreach ($dom in ($emailDomains | Sort-Object)) {
     [ordered]@{ 'Domain' = $dom; 'MX' = (Join-List $mx '; '); 'SPF' = $spfMode; 'SPF record' = $spf; 'DKIM signing (Exchange)' = $dkimSigning; 'DKIM DNS (selector1 / selector2)' = $dkimDns; 'DMARC policy' = $dmarcPolicy; 'DMARC coverage' = $dmarcPct; 'DMARC reporting (rua)' = $dmarcRua; 'DMARC record' = $dmarc; '_issues' = $(if ($is.Count) { $is } else { $null }) }
 }
 $emailAuthRows = @($emailAuthRows)
-$emailAuthComplete = @($emailAuthRows | Where-Object { -not $_['_issues'] }).Count
-$emailAuthStatus = if (-not $dnsAvailable) { 'Not available' } elseif ($emailAuthRows.Count -eq 0) { 'No email domains' } elseif ($emailAuthComplete -eq $emailAuthRows.Count) { 'Complete' } elseif (@($emailAuthRows | Where-Object { $_['DMARC policy'] -ne 'Missing' -or $_['SPF'] -ne 'Missing' }).Count) { 'Partial' } else { 'Missing' }
+$spfBad   = @($emailAuthRows | Where-Object { $_['SPF'] -ne 'Hard fail (-all)' })
+$dkimBad  = @($emailAuthRows | Where-Object { $_['DKIM signing (Exchange)'] -ne 'Enabled' -or $_['DKIM DNS (selector1 / selector2)'] -ne 'Both selectors published' })
+$dmarcBad = @($emailAuthRows | Where-Object { $_['DMARC policy'] -notin @('reject', 'quarantine') })
+function Get-EmailAuthStatus { param($Bad, [switch]$AnyRecordCountsAsPartial)
+    if (-not $dnsAvailable) { return 'Not available' }
+    if ($emailAuthRows.Count -eq 0) { return 'No email domains' }
+    if ($Bad.Count -eq 0) { return 'Complete' }
+    if ($Bad.Count -lt $emailAuthRows.Count) { return 'Partial' }
+    if ($AnyRecordCountsAsPartial -and @($Bad | Where-Object { $_['DMARC policy'] -ne 'Missing' }).Count) { return 'Partial' }
+    return 'Missing'
+}
+$spfStatus = Get-EmailAuthStatus $spfBad; $dkimStatus = Get-EmailAuthStatus $dkimBad; $dmarcStatus = Get-EmailAuthStatus $dmarcBad -AnyRecordCountsAsPartial
 
 # ----------------------------------------------------------------------------------------------
 # Defender for Endpoint (separate API; delegated token for the same user, only after a browser sign-in)
@@ -1754,7 +1765,7 @@ $MdeFilters = @(@{ Label = 'High risk'; Tag = 'highrisk' }, @{ Label = 'High exp
 
 $UserByUpn = @{}; foreach ($u in $users) { if ($u.userPrincipalName) { $UserByUpn[([string]$u.userPrincipalName).ToLower()] = $u } }
 # ----------------------------------------------------------------------------------------------
-# Possible indications of compromise (section 4): what an attacker typically leaves behind, from the
+# Possible indications of compromise (section 3): what an attacker typically leaves behind, from the
 # directory audit log, the sign-in log, Entra ID Protection, app registrations and Exchange (collected above).
 # Nothing here is a confirmed incident; each item is something to confirm with the people involved.
 # ----------------------------------------------------------------------------------------------
@@ -2123,6 +2134,7 @@ if ($extShareRows.Count) { $spoKvIssues['Files shared externally in the last 30 
 $spoStatus = if (-not $spoSettings) { 'Not available' } else { switch ([string]$spoSettings.sharingCapability) { 'disabled' { 'Restricted (internal only)' } 'existingExternalUserSharingOnly' { 'Restricted (existing guests only)' } 'externalUserSharingOnly' { 'Allowed (guests must sign in)' } 'externalUserAndGuestSharing' { 'Anyone links allowed' } default { [string]$spoSettings.sharingCapability } } }
 $spoEvidence = if ($spoSettings) { "External sharing: $($spoKv['External sharing (SharePoint)']); domain restriction: $($spoKv['Sharing domain restriction']); guests re-share: $($spoKv['Guests can re-share items they do not own']); legacy auth: $($spoKv['Legacy authentication protocols allowed']); unmanaged sync restricted: $($spoKv['OneDrive sync restricted to managed devices']); idle sign-out: $($spoKv['Idle session sign-out']). $(if ($siteReport.Count) { "$($siteRows.Count) sites, $sitesInactive inactive, $sitesNoOwner without owner. " })$(if ($odReport.Count) { "$($odRows.Count) OneDrives, $($odOwnerDisabled + $odOwnerMissing) with disabled or missing owner. " })$(if ($extShareRows.Count) { "$($extShareRows.Count) user(s) shared $extShareTotal file(s) externally in 30 days." })" } else { [string]$spoKv['SharePoint tenant settings'] }
 $reportConcealedNote = if ($teamsConcealed -or $siteConcealed -or $odConcealed) { "Microsoft 365 usage reports in this tenant conceal user, group and site names (they appear as hashes). To show real names, in the Microsoft 365 admin center go to Settings > Org settings > Services > Reports and clear 'Display concealed user, group, and site names in all reports'." } else { '' }
+if ($reportConcealedNote) { $spoKv['Usage report names'] = 'Concealed by the tenant report privacy setting (OneDrive, site and team owners show as hashes)'; $spoKvIssues['Usage report names'] = 'reports-concealed' }
 
 # Defender for Office 365 / EOP overall status
 $safeLinksActive  = @($safeLinksRows | Where-Object { $_['Email'] -eq $true }).Count
@@ -2186,7 +2198,11 @@ Add-SummaryRow 'Automatic email forwarding outside the tenant' $fwdStatus $(if (
 
 Add-SummaryRow 'User consent to applications' $(if ($userConsentSetting -match 'Do not allow') { 'Restricted' } else { 'Allowed' }) "Setting: $userConsentSetting; admin consent workflow: $($appGovKv['Admin consent request workflow'])" 'Enterprise Applications'
 
-Add-SummaryRow 'Email authentication (SPF, DKIM, DMARC)' $emailAuthStatus $(if ($emailAuthRows.Count) { Join-List ($emailAuthRows | ForEach-Object { "$($_['Domain']): SPF $($_['SPF']); DKIM $($_['DKIM signing (Exchange)']) / $($_['DKIM DNS (selector1 / selector2)']); DMARC $($_['DMARC policy'])" }) ' || ' } elseif (-not $dnsAvailable) { 'Resolve-DnsName is not available on this computer.' } else { 'No email-enabled custom domains.' }) 'Exchange Online'
+Add-SummaryRow 'SPF record (DNS)' $spfStatus $(if ($emailAuthRows.Count) { Join-List ($emailAuthRows | ForEach-Object { "$($_['Domain']): $($_['SPF'])" }) '; ' } elseif (-not $dnsAvailable) { 'Resolve-DnsName is not available on this computer.' } else { 'No email-enabled custom domains.' }) 'Exchange Online'
+
+Add-SummaryRow 'DKIM signing (Exchange Online and DNS)' $dkimStatus $(if ($emailAuthRows.Count) { Join-List ($emailAuthRows | ForEach-Object { "$($_['Domain']): signing $($_['DKIM signing (Exchange)']), DNS $($_['DKIM DNS (selector1 / selector2)'])" }) '; ' } elseif (-not $dnsAvailable) { 'Resolve-DnsName is not available on this computer.' } else { 'No email-enabled custom domains.' }) 'Exchange Online'
+
+Add-SummaryRow 'DMARC policy (DNS)' $dmarcStatus $(if ($emailAuthRows.Count) { Join-List ($emailAuthRows | ForEach-Object { "$($_['Domain']): p=$($_['DMARC policy'])$(if ($_['DMARC coverage']) { ", pct $($_['DMARC coverage'])" })$(if ($_['DMARC reporting (rua)']) { ", reporting $($_['DMARC reporting (rua)'])" })" }) '; ' } elseif (-not $dnsAvailable) { 'Resolve-DnsName is not available on this computer.' } else { 'No email-enabled custom domains.' }) 'Exchange Online'
 
 Add-SummaryRow 'Email protection (Defender for Office 365 / EOP)' $defenderStatus $defenderEvidence 'Defender'
 
@@ -2235,7 +2251,9 @@ $FrameworkMap = @{
     'Users restricted from joining devices to Entra ID' = @{ Nist = 'ID.AM-01, PR.AA-05'; Cis365 = '5.1.2 Entra: device join and registration settings'; CisV8 = '1.1, 1.2'; Ffiec = 'CAT/ACET D3.PC.De' }
     'Automatic email forwarding outside the tenant' = @{ Nist = 'PR.DS-02 (data in transit), DE.CM-09; PR.PS-01'; Cis365 = '6.2.1 All forms of mail forwarding blocked'; CisV8 = '3.3, 9.x Email protections'; Ffiec = 'CAT/ACET D3.PC.Am; IT Handbook Information Security: Data loss prevention' }
     'User consent to applications'                 = @{ Nist = 'PR.AA-05, GV.SC (supply chain), PR.PS-05 (unauthorized software prevented)'; Cis365 = '5.1.5 User consent to applications; admin consent workflow'; CisV8 = '2.3, 2.5 (allowlist authorized software)'; Ffiec = 'CAT/ACET D4.RM Third-party risk; D3.PC.Am' }
-    'Email authentication (SPF, DKIM, DMARC)'      = @{ Nist = 'PR.DS-02, PR.PS-01; NIST SP 800-177 (Trustworthy Email)'; Cis365 = '2.1.8 SPF, 2.1.9 DKIM, 2.1.10 DMARC'; CisV8 = '9.5 (implement DMARC)'; Ffiec = 'CAT/ACET D3.PC.Im; IT Handbook Information Security: Email controls' }
+    'SPF record (DNS)'                             = @{ Nist = 'PR.DS-02, PR.PS-01; NIST SP 800-177 (Trustworthy Email)'; Cis365 = '2.1.8 Ensure that SPF records are published for all Exchange domains'; CisV8 = '9.5 (implement DMARC; SPF and DKIM are prerequisites)'; Ffiec = 'CAT/ACET D3.PC.Im Infrastructure Management; IT Handbook Information Security: Email controls' }
+    'DKIM signing (Exchange Online and DNS)'       = @{ Nist = 'PR.DS-02, PR.PS-01; NIST SP 800-177'; Cis365 = '2.1.9 Ensure that DKIM is enabled for all Exchange Online domains'; CisV8 = '9.5'; Ffiec = 'CAT/ACET D3.PC.Im; IT Handbook Information Security: Email controls' }
+    'DMARC policy (DNS)'                           = @{ Nist = 'PR.DS-02, PR.PS-01, DE.CM-09; NIST SP 800-177'; Cis365 = '2.1.10 Ensure DMARC records for all Exchange Online domains are published'; CisV8 = '9.5 (implement DMARC)'; Ffiec = 'CAT/ACET D3.PC.Im; D3.DC.Th Threat Detection (DMARC reports)' }
     'Email protection (Defender for Office 365 / EOP)' = @{ Nist = 'PR.PS-05, DE.CM-09, PR.AT-01 (phishing)'; Cis365 = '2.1 Defender: Safe Links, Safe Attachments, anti-phishing, anti-spam, preset policies'; CisV8 = '9.6, 9.7, 10.1'; Ffiec = 'CAT/ACET D3.PC.Im, D3.DC.Th Threat Detection' }
     'Endpoint protection (Defender for Endpoint)'  = @{ Nist = 'DE.CM-09 (hardware/software monitored), PR.PS-05, RS.AN'; Cis365 = 'Not covered (Defender for Endpoint)'; CisV8 = '10.1, 10.7 (behaviour-based anti-malware), 13.2 (host-based intrusion detection)'; Ffiec = 'CAT/ACET D3.DC.Th, D3.DC.An Anomalous Activity Detection; D3.PC.De' }
     'Microsoft Secure Score'                       = @{ Nist = 'GV.OV-01 (cybersecurity risk management strategy outcomes reviewed), ID.IM-01 (improvements identified)'; Cis365 = 'Whole benchmark (Secure Score tracks many benchmark items)'; CisV8 = 'Implementation group progress'; Ffiec = 'CAT/ACET D1.G.Ov Oversight; D1.RM Risk Management: measurement and reporting' }
@@ -2246,6 +2264,7 @@ $FrameworkMap = @{
     'Indications of compromise to review'          = @{ Nist = 'DE.CM-01, DE.CM-03 (personnel activity monitored), DE.AE-02, DE.AE-06, RS.MA-01'; Cis365 = '6.1 Mailbox auditing; 5.2.2 sign-in and user risk policies; 3.x Purview audit'; CisV8 = '8.2, 8.5, 8.11 (collect, enrich, review audit logs), 17.x Incident response'; Ffiec = 'CAT/ACET D3.DC.An Anomalous Activity Detection, D3.DC.Ev Event Detection, D5.IR Incident Response; Authentication Guidance (2021): monitoring and logging' }
     'Teams guest and external access'              = @{ Nist = 'PR.AA-05, GV.SC-05 (third-party access), PR.DS-01'; Cis365 = '8.2 External access and unmanaged accounts; 8.5 Meeting policies (anonymous join, lobby); 5.1.6 Guest user settings; 1.2.1 Public groups'; CisV8 = '3.3 (data access control), 6.8'; Ffiec = 'CAT/ACET D3.PC.Am; D4.C Connections (third-party connectivity)' }
     'SharePoint and OneDrive external sharing'     = @{ Nist = 'PR.DS-01, PR.DS-02, PR.AA-05, PR.DS-10'; Cis365 = '7.2.3 External content sharing restricted; 7.2.5 Guests cannot re-share; 7.2.6 Sharing domain allow list; 7.2.7 Default link type; 7.3.2 OneDrive sync for unmanaged devices'; CisV8 = '3.3, 3.10, 6.8'; Ffiec = 'CAT/ACET D3.PC.Am; IT Handbook Information Security: Data classification and sharing' }
+    'Usage report names are concealed'             = @{ Nist = 'ID.AM-01, ID.AM-03 (data flows and ownership), DE.CM-03'; Cis365 = 'n/a (reporting prerequisite)'; CisV8 = '1.1, 3.2 (data inventory)'; Ffiec = 'CAT/ACET D1.G.Ov Oversight: management information' }
     'Intune is not licensed'                       = @{ Nist = 'ID.AM-01, PR.PS-01'; Cis365 = 'n/a (licensing prerequisite)'; CisV8 = '1.1, 4.1'; Ffiec = 'CAT/ACET D3.PC.De' }
     'Entra ID P1 is not licensed'                  = @{ Nist = 'PR.AA-03, DE.CM-03'; Cis365 = 'n/a (licensing prerequisite for Conditional Access and sign-in logs)'; CisV8 = '6.3, 8.2'; Ffiec = 'Authentication Guidance (2021): risk-based controls' }
 }
@@ -2342,11 +2361,24 @@ $Playbooks = @{
         'Entra admin center > Identity > Devices > Overview > Device settings.',
         'Users may join devices to Microsoft Entra = Selected (IT staff / enrolment group); Users may register their devices = Selected or None if Intune enrolment uses another path; Require Multifactor Authentication to register or join = Yes.',
         'Maximum number of devices per user = 5 or fewer.'); Verify = 'Section 9 Device registration settings shows the restriction; section 2 row shows Restricted.' }
-    'Email authentication (SPF, DKIM, DMARC)' = @{ Owner = 'IT provider / MSP with DNS access'; Effort = 'Two hours plus DNS propagation'; Prereq = 'Access to the public DNS zone of each domain'; Steps = @(
-        'SPF: publish exactly one TXT record per domain listing every legitimate sender (Exchange Online include:spf.protection.outlook.com, plus marketing or core-banking senders) and end it with -all (hard fail). Keep lookups under ten.',
-        'DKIM: Defender portal > Email & collaboration > Policies & rules > Threat policies > Email authentication settings > DKIM: select the domain, create the two CNAME records it shows (selector1._domainkey and selector2._domainkey) in DNS, then Enable.',
-        'DMARC: publish _dmarc TXT with p=none and rua= reporting address first; after two to four weeks of clean reports move to p=quarantine, then p=reject with pct=100.',
-        'Repeat for every domain that sends mail, and publish SPF -all plus DMARC p=reject on domains that send none (parked domains).'); Verify = 'Section 14 email authentication table shows every domain with SPF -all, DKIM enabled and published, DMARC quarantine or reject at 100%.' }
+    'SPF record (DNS)' = @{ Owner = 'IT provider / MSP with access to the public DNS zone'; Effort = 'Thirty minutes per domain plus DNS propagation'; Prereq = 'Login to the DNS host (registrar, Cloudflare, GoDaddy, the core provider) for each domain'; Steps = @(
+        'List every system that legitimately sends mail as the domain: Exchange Online, the core banking or statement provider, marketing tools, scanners and alerting systems (check the Exchange message trace and current SPF record).',
+        'Build one TXT record at the domain root: v=spf1 include:spf.protection.outlook.com <one include or ip4 per other sender> -all. Keep the total DNS lookups under ten (flatten or remove unused includes).',
+        'Publish it in the DNS zone, replacing any existing SPF record (there must be exactly one). Use -all (hard fail); ~all lets spoofed mail through to the inbox.',
+        'For domains that never send mail (parked domains), publish v=spf1 -all.',
+        'Check with https://mxtoolbox.com/spf.aspx or the next run of this report.'); Verify = 'Section 15 shows SPF "Hard fail (-all)" for every domain and the control reads Complete.' }
+    'DKIM signing (Exchange Online and DNS)' = @{ Owner = 'IT provider / MSP (Exchange Administrator plus DNS access)'; Effort = 'Twenty minutes per domain plus DNS propagation'; Prereq = 'Exchange Online; access to the public DNS zone'; Steps = @(
+        'Open the DKIM page in the Defender portal (link in the Where column): Email & collaboration > Policies & rules > Threat policies > Email authentication settings > DKIM.',
+        'Select the domain. If no keys exist, click Create DKIM keys. The page shows two CNAME records: selector1._domainkey.<domain> and selector2._domainkey.<domain> with their target values (selector1-<domain-with-dashes>._domainkey.<tenant>.onmicrosoft.com).',
+        'Create both CNAME records in the public DNS zone exactly as shown (host = selector1._domainkey, value = the target; same for selector2). Wait for propagation (minutes to a few hours).',
+        'Back on the DKIM page, turn the "Sign messages for this domain with DKIM signatures" toggle to Enabled. If it reports the CNAMEs are missing, wait and retry.',
+        'Repeat for every custom domain that sends mail. Rotate keys from the same page once a year.'); Verify = 'Section 15 shows DKIM signing Enabled and "Both selectors published" for every domain; the control reads Complete.' }
+    'DMARC policy (DNS)' = @{ Owner = 'IT provider / MSP with access to the public DNS zone; security officer receives the reports'; Effort = 'Fifteen minutes to publish, then two to four weeks of monitoring before enforcement'; Prereq = 'SPF and DKIM in place for the domain; a mailbox or DMARC reporting service for aggregate reports'; Steps = @(
+        'Publish a TXT record at _dmarc.<domain>: v=DMARC1; p=none; rua=mailto:dmarc@<domain>; pct=100. p=none only monitors; it changes nothing about delivery yet.',
+        'Collect the aggregate (rua) reports for two to four weeks (a free or paid DMARC report service makes them readable) and confirm every legitimate sender passes SPF or DKIM.',
+        'Change the record to p=quarantine; pct=100, wait another two weeks, then p=reject; pct=100. Reject is the state examiners and CIS expect.',
+        'Add adkim=s and aspf=s (strict alignment) once all senders align, and publish p=reject on parked domains immediately.',
+        'Keep the rua address monitored; a new sender failing DMARC is either a new vendor to add to SPF or an attacker spoofing the institution.'); Verify = 'Section 15 shows DMARC p=reject (or quarantine) at pct 100 with reporting Yes for every domain; the control reads Complete.' }
     'Email protection (Defender for Office 365 / EOP)' = @{ Owner = 'IT provider / MSP'; Effort = 'Two hours'; Prereq = 'Defender for Office 365 Plan 1 (included in Business Premium) for Safe Links / Safe Attachments'; Steps = @(
         'Defender portal > Email & collaboration > Policies & rules > Threat policies > Preset security policies: turn on Standard protection for all users (Strict for executives and finance). This configures anti-spam, anti-phishing, Safe Links and Safe Attachments consistently.',
         'Anti-phishing policy: enable impersonation protection for the CEO, CFO, controller and the institution''s domains; mailbox intelligence = On; phishing threshold = 2 (Aggressive).',
@@ -2375,7 +2407,7 @@ $Playbooks = @{
         'Register MFA for it (FIDO2 key in the safe is ideal) and exclude it from Conditional Access policies.',
         'Document the procedure for using it and test it twice a year.'); Verify = 'Section 1 KPI shows two Global Administrators.' }
     'Indications of compromise to review' = @{ Owner = 'Security officer with IT provider / MSP'; Effort = 'Same day for urgent items; one week for the rest'; Prereq = 'None'; Steps = @(
-        'Take each urgent row in section 4 to the person named (mailbox owner, administrator) and ask one question: did you do this?',
+        'Take each urgent row in section 3 to the person named (mailbox owner, administrator) and ask one question: did you do this?',
         'If the answer is no or uncertain: reset the password, revoke sessions (Entra admin center > Users > user > Revoke sessions), remove the rule, credential or role, and preserve the evidence (export the audit rows).',
         'Check the affected mailbox for sent items, forwarding and other rules; check the user''s devices in Defender.',
         'Record the outcome (expected / incident) next to each item; anything confirmed as an incident goes through the incident response plan and, where required, regulatory notification.',
@@ -2393,6 +2425,10 @@ $Playbooks = @{
         'Access control: Unmanaged devices = Allow limited, web-only access; Idle session sign-out = On (warn 55 min, sign out 60); Apps that do not use modern authentication = Block.',
         'OneDrive: Sync allowed only on domain-joined or compliant PCs; set deleted-user OneDrive retention to the minimum policy allows and assign a manager for departed staff.',
         'Review the users in section 17 who shared externally and the inactive or ownerless sites; archive or delete what is no longer needed.'); Verify = 'Section 17 shows the sharing level as guests only (no Anyone links), domain restriction on, idle sign-out on, unmanaged sync restricted.' }
+    'Usage report names are concealed' = @{ Owner = 'IT provider / MSP with Global Administrator'; Effort = 'Five minutes'; Prereq = 'Global Administrator'; Steps = @(
+        'Microsoft 365 admin center (admin.microsoft.com) > Settings > Org settings > Services tab > Reports.',
+        'Clear "Display concealed user, group, and site names in all reports" and Save.',
+        'Run this report again (the usage reports refresh within 48 hours); OneDrive owners, site owners and team names then appear.'); Verify = 'Section 18 shows OneDrive owners and site owners by name and the finding disappears.' }
     'Intune is not licensed' = @{ Owner = 'IT committee (licensing decision)'; Effort = 'Decision plus purchase'; Prereq = 'Budget'; Steps = @(
         'Compare Microsoft 365 Business Premium (includes Intune, Entra ID P1, Defender for Business and Defender for Office 365 P1) against adding Intune Plan 1 and Entra ID P1 to the current licence.',
         'For a bank or credit union with managed PCs, Business Premium (up to 300 users) or E3/E5 is almost always the right answer; present the cost per user per month to the committee.',
@@ -2408,7 +2444,9 @@ $ScorePlaybooks = @(
     @{ Match = '(?i)MFA|multi-?factor|authentication strength';                          Use = 'MFA enforced for sign-in' }
     @{ Match = '(?i)legacy|basic auth|SMTP AUTH|POP|IMAP';                               Use = 'Legacy authentication protocols disabled' }
     @{ Match = '(?i)forward';                                                            Use = 'Automatic email forwarding outside the tenant' }
-    @{ Match = '(?i)SPF|DKIM|DMARC';                                                     Use = 'Email authentication (SPF, DKIM, DMARC)' }
+    @{ Match = '(?i)\bSPF\b';                                                           Use = 'SPF record (DNS)' }
+    @{ Match = '(?i)\bDKIM\b';                                                          Use = 'DKIM signing (Exchange Online and DNS)' }
+    @{ Match = '(?i)\bDMARC\b';                                                         Use = 'DMARC policy (DNS)' }
     @{ Match = '(?i)safe links|safe attachments|anti-?phish|impersonat|spam|malware|quarantine|zero-hour|ZAP|spoof|mailbox intelligence|phishing'; Use = 'Email protection (Defender for Office 365 / EOP)' }
     @{ Match = '(?i)consent|third[- ]party app';                                         Use = 'User consent to applications' }
     @{ Match = '(?i)global admin';                                                       Use = 'Too many Global Administrators' }
@@ -2447,12 +2485,14 @@ $remediationGuides = @(
     @{ Control = 'Automatic email forwarding outside the tenant'; Bad = '^(Active external|Allowed by policy)'; Priority = 'High'; Action = 'Set automatic forwarding to Off in the outbound spam filter policy, set the default remote domain to not allow auto-forward, then review and remove the mailbox forwards and inbox rules listed under Exchange Online.' }
     @{ Control = 'Conditional Access restricts access to Entra joined or compliant devices'; Bad = '^(Not enforced|Partial)'; Priority = 'Medium'; Action = 'Enroll company devices in Intune, then add a Conditional Access policy that requires a compliant or hybrid-joined device for Microsoft 365 apps. Start in report-only mode and review the sign-in impact before enforcing.' }
     @{ Control = 'Intune deployed to Windows computers';          Bad = '^(Not deployed|Partial)'; Priority = 'Medium';   Action = 'Enroll the Windows devices listed under Managed Devices into Intune (automatic enrollment through Entra join or group policy) so they can be measured against compliance policies.' }
-    @{ Control = 'Intune compliance policies';                    Bad = '^None';                   Priority = 'Medium';   Action = 'Create a compliance policy per platform (Windows, iOS/iPadOS, Android, macOS) that requires encryption, a PIN or password, a minimum OS version and real-time protection, and marks devices noncompliant after a short grace period.' }
+    @{ Control = 'Intune compliance policies';                    Bad = '^None';                   Priority = 'Critical';   Action = 'Create a compliance policy per platform (Windows, iOS/iPadOS, Android, macOS) that requires encryption, a PIN or password, a minimum OS version and real-time protection, and marks devices noncompliant after a short grace period.' }
     @{ Control = 'Intune configuration and security policies';    Bad = '^0 policies';             Priority = 'Medium';   Action = 'Deploy a baseline: Microsoft security baseline, BitLocker, Defender Antivirus and firewall, screen lock, and Windows update rings. Assign to all devices and confirm the settings report as applied.' }
-    @{ Control = 'User consent to applications';                  Bad = '^Allowed';                Priority = 'Medium';   Action = 'Set user consent to "Do not allow" (or limit it to verified publishers and low-impact permissions) and enable the admin consent request workflow with named reviewers, so every new application is approved by an administrator.' }
+    @{ Control = 'User consent to applications';                  Bad = '^Allowed';                Priority = 'Critical';   Action = 'Set user consent to "Do not allow" (or limit it to verified publishers and low-impact permissions) and enable the admin consent request workflow with named reviewers, so every new application is approved by an administrator.' }
     @{ Control = 'Temporary Access Pass (TAP) implemented';       Bad = '^Disabled';               Priority = 'Low';      Action = 'Enable Temporary Access Pass for onboarding and MFA recovery: one-time use, a short lifetime, scoped to a help-desk-managed group.' }
     @{ Control = 'Users restricted from joining devices to Entra ID'; Bad = '^All users allowed';  Priority = 'Low';      Action = 'Restrict Entra ID device join to selected users or groups and require MFA to register or join a device.' }
-    @{ Control = 'Email authentication (SPF, DKIM, DMARC)';      Bad = '^(Partial|Missing)';      Priority = 'High';     Action = 'For every email domain publish SPF ending in -all, enable DKIM signing in Exchange and publish both selector CNAMEs, and publish DMARC (start at p=none with reporting, then move to quarantine and reject). This stops criminals sending mail as your bank to customers and staff.' }
+    @{ Control = 'SPF record (DNS)';                              Bad = '^(Partial|Missing)';      Priority = 'High';     Action = 'Publish one SPF TXT record per sending domain that lists every legitimate sender and ends in -all (hard fail). This is a DNS change at the domain registrar or DNS host, not a Microsoft 365 setting.'; Url = 'https://learn.microsoft.com/microsoft-365/security/office-365-security/email-authentication-spf-configure' }
+    @{ Control = 'DKIM signing (Exchange Online and DNS)';        Bad = '^(Partial|Missing)';      Priority = 'High';     Action = 'On the Defender portal DKIM page create the keys for each domain, publish the two selector CNAME records it shows in public DNS, then enable signing. Without DKIM, DMARC cannot reach reject and forwarded mail fails authentication.'; Url = 'https://security.microsoft.com/dkimv2' }
+    @{ Control = 'DMARC policy (DNS)';                            Bad = '^(Partial|Missing)';      Priority = 'High';     Action = 'Publish a _dmarc TXT record with aggregate reporting, monitor for two to four weeks, then move to p=quarantine and p=reject at pct=100. DMARC is what actually tells the world''s mail servers to refuse mail spoofing the institution. DNS change, not a Microsoft 365 setting.'; Url = 'https://learn.microsoft.com/microsoft-365/security/office-365-security/email-authentication-dmarc-configure' }
     @{ Control = 'Email protection (Defender for Office 365 / EOP)'; Bad = '^(Licensed, not configured|EOP only)'; Priority = 'High'; Action = 'If Defender for Office 365 is licensed, enable the Standard preset security policy for all users (Strict for executives and finance) so Safe Links, Safe Attachments and impersonation protection apply. If it is not licensed, license Plan 1 (included in Business Premium); phishing is the top attack path against bank staff.' }
     @{ Control = 'Endpoint protection (Defender for Endpoint)';  Bad = '^(Attention needed|No devices onboarded|Not licensed)'; Priority = 'Medium'; Action = 'Onboard every managed Windows and macOS device to Defender for Endpoint / Defender for Business through Intune, resolve high-risk alerts, and re-onboard or retire devices with inactive sensors.' }
 )
@@ -2469,7 +2509,9 @@ $ControlPortalUrl = @{
     'Users restricted from joining devices to Entra ID'          = 'https://entra.microsoft.com/#view/Microsoft_AAD_Devices/DevicesMenuBlade/~/DeviceSettings'
     'Automatic email forwarding outside the tenant'              = 'https://security.microsoft.com/antispam'
     'User consent to applications'                               = 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/ConsentPoliciesMenuBlade/~/UserSettings'
-    'Email authentication (SPF, DKIM, DMARC)'                    = 'https://security.microsoft.com/dkimv2'
+    'SPF record (DNS)'                                           = 'https://learn.microsoft.com/microsoft-365/security/office-365-security/email-authentication-spf-configure'
+    'DKIM signing (Exchange Online and DNS)'                     = 'https://security.microsoft.com/dkimv2'
+    'DMARC policy (DNS)'                                         = 'https://learn.microsoft.com/microsoft-365/security/office-365-security/email-authentication-dmarc-configure'
     'Email protection (Defender for Office 365 / EOP)'           = 'https://security.microsoft.com/presetSecurityPolicies'
     'Endpoint protection (Defender for Endpoint)'                = 'https://security.microsoft.com/machines'
     'Microsoft Secure Score'                                     = 'https://security.microsoft.com/securescore'
@@ -2480,7 +2522,8 @@ foreach ($g in $remediationGuides) {
     if ($row -and ([string]$row.Status -match $g.Bad)) { Add-Remediation -Priority $g.Priority -Finding $g.Control -State "$($row.Status). $($row.Evidence)" -Action $g.Action -Section $row.Section -Url $(if ($g.Url) { $g.Url } elseif ($ControlPortalUrl.ContainsKey($g.Control)) { $ControlPortalUrl[$g.Control] } else { $null }) }
 }
 # Licensing gaps that stop whole control families from existing
-if ($script:HasIntune -eq $false)  { Add-Remediation -Priority 'Low' -Finding 'Intune is not licensed' -State 'No Intune service plan in the subscribed SKUs, so device compliance, configuration policies and device-based Conditional Access cannot be implemented.' -Action 'License Microsoft Intune (included in Microsoft 365 Business Premium, E3 and E5) and then complete the device controls above.' -Section 'Tenant Overview' }
+if ($script:HasIntune -eq $false)  { Add-Remediation -Priority 'High' -Finding 'Intune is not licensed' -State 'No Intune service plan in the subscribed SKUs, so device compliance, configuration policies and device-based Conditional Access cannot be implemented.' -Action 'License Microsoft Intune (included in Microsoft 365 Business Premium, E3 and E5) and then complete the device controls above.' -Section 'Tenant Overview' }
+if ($reportConcealedNote) { Add-Remediation -Priority 'High' -Finding 'Usage report names are concealed' -State 'The Microsoft 365 usage reports return hashes instead of user, group and site names, so the OneDrive, SharePoint site and Teams inventories cannot be attributed to people.' -Action 'In the Microsoft 365 admin center clear the report privacy setting "Display concealed user, group, and site names in all reports" (Settings > Org settings > Services > Reports). One-time tenant setting; the script never changes it.' -Section 'SharePoint' -Url 'https://admin.microsoft.com/#/Settings/Services/:/Settings/L1/Reports' }
 if ($script:HasEntraP1 -eq $false) { Add-Remediation -Priority 'Low' -Finding 'Entra ID P1 is not licensed' -State 'No Entra ID P1/P2 service plan, so Conditional Access, the MFA registration report and sign-in activity are unavailable; protection relies on security defaults.' -Action 'License Entra ID P1 (included in Microsoft 365 Business Premium and E3) to gain Conditional Access and the MFA registration and sign-in reports this report measures.' -Section 'Tenant Overview' }
 # Privileged access
 $gaRole  = $roles | Where-Object { $_.displayName -eq 'Global Administrator' } | Select-Object -First 1
@@ -2564,15 +2607,20 @@ details.info .tip p{margin:6px 0 0}
 .muted{color:#555;font-size:9pt}details.steps{margin-top:4px}details.steps summary{cursor:pointer;color:var(--blue);font-size:9.5pt}details.steps ol{margin:4px 0;padding-left:18px;font-size:9.5pt}details.steps p{font-size:9.5pt;margin:4px 0}
 .howto{background:#f3f6f9;border:1px solid var(--line);border-radius:6px;padding:10px 14px;margin:10px 0 16px;font-size:10pt}.howto ul{margin:4px 0 0;padding-left:18px}.howto li{margin:3px 0}
 .signoff{display:flex;gap:24px;flex-wrap:wrap;margin:6px 0 14px}.signoff div{flex:1 1 220px;border-top:1px solid #000;padding-top:4px;font-size:9.5pt;margin-top:30px}
+.modal{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:50}.modal[hidden]{display:none}
+.modal-box{background:#fff;border-radius:8px;max-width:780px;width:92%;max-height:86vh;display:flex;flex-direction:column;box-shadow:0 10px 30px rgba(0,0,0,.3)}
+.modal-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--line)}.modal-head b{font-size:11pt;color:var(--blue)}
+.modal-head button,.modal-actions button{font:inherit;font-size:9.5pt;border:1px solid var(--blue);background:var(--blue);color:#fff;border-radius:4px;padding:4px 12px;cursor:pointer}.modal-head button{background:#fff;color:var(--blue)}
+.modal pre{margin:0;padding:12px 14px;overflow:auto;white-space:pre-wrap;word-break:break-word;font:10pt Consolas,monospace;flex:1 1 auto;background:#fafafa}.modal-actions{display:flex;gap:12px;align-items:center;padding:10px 14px;border-top:1px solid var(--line)}.modal-actions .hint{font-size:9pt;color:#555}body.noscroll{overflow:hidden}
 .privacy{background:#eef6ee;border:1px solid #bfe0c2;border-left:5px solid var(--good);padding:10px 14px;border-radius:4px;font-size:10pt;margin:16px 0}
-@media print{nav{display:none}.ticketbar,button.tk{display:none}main{margin:0;padding:0}section{page-break-before:always}section:first-of-type{page-break-before:avoid}table.grid thead th{position:static}.filters{display:none}details.info .tip{position:static;display:block;width:auto;box-shadow:none;margin-top:4px}details.info summary{display:none}details.info:not([open]) .tip{display:none}}
+@media print{nav{display:none}.ticketbar,button.tk,.modal{display:none}main{margin:0;padding:0}section{page-break-before:always}section:first-of-type{page-break-before:avoid}table.grid thead th{position:static}.filters{display:none}details.info .tip{position:static;display:block;width:auto;box-shadow:none;margin-top:4px}details.info summary{display:none}details.info:not([open]) .tip{display:none}}
 "@
 
 $sections = @(
     @{ Id = 'overview';     Title = '1. Executive Summary' },
     @{ Id = 'summary';      Title = '2. Security Controls Summary' },
-    @{ Id = 'remediation';  Title = '3. Remediation Plan' },
-    @{ Id = 'ioc';          Title = '4. Possible Indications of Compromise' },
+    @{ Id = 'ioc';          Title = '3. Review These Now: Indications of Compromise' },
+    @{ Id = 'remediation';  Title = '4. Remediation Plan' },
     @{ Id = 'frameworks';   Title = '5. Framework Alignment (NIST, CIS, FFIEC)' },
     @{ Id = 'mdm';          Title = '6. MDM Compliance Policies'; Sub = @($policyGroups | ForEach-Object { @{ Id = ('mdm-' + ($_.Name -replace '[^A-Za-z0-9]', '')); Title = $_.Name } }) },
     @{ Id = 'profiles';     Title = '7. Intune Policies' },
@@ -2615,7 +2663,7 @@ $SummaryIssueMap = @{
     'Conditional Access restricts access to Entra joined or compliant devices' = 'device-ca'; 'Intune deployed to Windows computers' = 'intune-coverage'
     'Intune compliance policies' = 'compliance-none'; 'Intune configuration and security policies' = 'config-none'; 'Temporary Access Pass (TAP) implemented' = 'tap-disabled'
     'Users restricted from joining devices to Entra ID' = 'device-join-open'; 'Automatic email forwarding outside the tenant' = 'forwarding'; 'User consent to applications' = 'consent-allowed'
-    'Microsoft Secure Score' = 'secure-score'; 'Security defaults' = 'security-defaults-off'; 'Email authentication (SPF, DKIM, DMARC)' = 'dmarc-missing'; 'Email protection (Defender for Office 365 / EOP)' = 'defender-not-licensed'; 'Endpoint protection (Defender for Endpoint)' = 'mde-not-licensed'
+    'Microsoft Secure Score' = 'secure-score'; 'Security defaults' = 'security-defaults-off'; 'SPF record (DNS)' = 'spf-weak'; 'DKIM signing (Exchange Online and DNS)' = 'dkim-missing'; 'DMARC policy (DNS)' = 'dmarc-missing'; 'Email protection (Defender for Office 365 / EOP)' = 'defender-not-licensed'; 'Endpoint protection (Defender for Endpoint)' = 'mde-not-licensed'
 }
 foreach ($r in $userRows) {
     $tg = " $($r['_tags']) "; $is = @{}
@@ -2713,7 +2761,7 @@ $execNarrative = "This report was produced on $($ReportDate.ToString('MMMM d, yy
     "It measures $($controlsRated.Count) security controls that regulators and examiners ask about; <b>$($controlsMet.Count) are met</b>. " +
     $(if ($null -ne $scoreCurrent) { "Microsoft Secure Score is <b>$scoreCurrent of $scoreMax points ($scorePct%)</b> against a target of $scoreTarget points ($TargetScorePercent%)$(if ($scoreCompareText) { "; $scoreCompareText" }). " } else { 'Microsoft Secure Score could not be read. ' }) +
     "The remediation plan contains <b>$($remediationSorted.Count) findings</b> ($remediationCounts). " +
-    $(if ($iocCollected) { "Possible indications of compromise in the last $AuditDays days: <b>$iocUrgentCount urgent</b> and $iocReviewCount to review (section 4). " } else { '' }) +
+    $(if ($iocCollected) { "Possible indications of compromise in the last $AuditDays days: <b>$iocUrgentCount urgent</b> and $iocReviewCount to review (section 3). " } else { '' }) +
     $(if ($null -ne $passkeyPct) { "MFA is provided by $(HtmlEnc $mfaProductShort); <b>$passkeyPct%</b> of enabled users and $adminPhishRes of $($adminUsers.Count) administrators have phishing-resistant MFA (passkeys). " } else { '' }) +
     $(if ($enabledMemberCount) { "There are $enabledMemberCount enabled user accounts$(if ($null -ne $noMfaCount) { ", $noMfaCount without MFA registered" })$(if ($null -ne $staleUserCount) { ", $staleUserCount with no sign-in in $StaleDays days" }), $gaCount Global Administrator account(s), and $($allDeviceRows.Count) devices, of which $notInIntuneCount enabled device(s) are not managed by Intune." } else { '' })
 
@@ -2865,6 +2913,7 @@ function Get-PortalLabel {
         'admin\.teams\.microsoft\.com'                   { return 'Open in Teams admin center' }
         'sharepoint'                                       { return 'Open in SharePoint admin center' }
         'compliance\.microsoft\.com|purview'              { return 'Open in Purview' }
+        'learn\.microsoft\.com'                           { return 'Microsoft guidance (DNS change)' }
         'admin\.microsoft\.com'                           { return 'Open in Microsoft 365 admin center' }
         default                                            { return 'Open setting' }
     }
@@ -2894,7 +2943,7 @@ foreach ($item in $remediationSorted) {
     if ($pb) { $how += "<details class='steps'><summary>Step by step ($(@($pb.Steps).Count) steps)</summary><ol>" + ((@($pb.Steps) | ForEach-Object { "<li>$(HtmlEnc $_)</li>" }) -join '') + "</ol><p><b>Prerequisite:</b> $(HtmlEnc $pb.Prereq)<br><b>Done when:</b> $(HtmlEnc $pb.Verify)</p></details>" }
     $ownerCell = if ($pb) { "$(HtmlEnc $pb.Owner)<br><span class='muted'>$(HtmlEnc $pb.Effort)</span>$(if ($item.Impact) { "<br><span class='muted'>$(HtmlEnc $item.Impact)</span>" })" } else { HtmlEnc $item.Impact }
     $fwCell = if ($item.Frameworks) { "<details class='steps'><summary>Show</summary><p>$((HtmlEnc $item.Frameworks) -replace ' \| ', '<br>')</p></details>" } else { '' }
-    [void]$remHtml.Append("<tr id='rem-$($item.Ref)' data-tags='$($item.Priority.ToLower())'><td>$remIdx</td><td class='ref'>$(HtmlEnc $item.Ref)</td><td class='$cls'>$(HtmlEnc $item.Priority)</td><td>$(HtmlEnc $item.Phase)</td><td><b>$(HtmlEnc $item.Finding)</b></td><td>$(HtmlEnc $item.State)</td><td>$how</td><td>$ownerCell</td><td>$(if ($null -ne $item.Points) { HtmlEnc $item.Points })</td><td>$fwCell</td><td>$detail</td><td><button type='button' class='tk' data-i='$($remIdx - 1)' title='Copy this finding, with its steps, as ticket text for your IT provider or MSP'>Copy ticket</button></td></tr>")
+    [void]$remHtml.Append("<tr id='rem-$($item.Ref)' data-tags='$($item.Priority.ToLower())'><td>$remIdx</td><td class='ref'>$(HtmlEnc $item.Ref)</td><td class='$cls'>$(HtmlEnc $item.Priority)</td><td>$(HtmlEnc $item.Phase)</td><td><b>$(HtmlEnc $item.Finding)</b></td><td>$(HtmlEnc $item.State)</td><td>$how</td><td>$ownerCell</td><td>$(if ($null -ne $item.Points) { HtmlEnc $item.Points })</td><td>$fwCell</td><td>$detail</td><td><button type='button' class='tk' data-i='$($remIdx - 1)' title='Preview the ticket text for this finding, then copy it'>View ticket</button></td></tr>")
 }
 [void]$remHtml.Append('</tbody></table>')
 if ($remIdx -eq 0) { $remHtml = New-Object System.Text.StringBuilder; [void]$remHtml.Append("<p class='empty'>No findings. Every measured control passed and every Secure Score action is implemented.</p>") }
@@ -2918,7 +2967,8 @@ $ticketJson = if ($ticketRows.Count) { (ConvertTo-Json -InputObject $ticketRows 
 $ticketMeta = ConvertTo-Json -InputObject ([pscustomobject]@{ Client = $ClientLabel; Date = $ReportDate.ToString('yyyy-MM-dd'); Version = $ScriptVersion; File = $ticketCsvName }) -Compress
 $ticketBar = if ($remIdx) {
     "<div class='filters' data-table='remTable'><button class='on' data-tag='all'>All</button><button data-tag='critical'>Critical</button><button data-tag='high'>High</button><button data-tag='medium'>Medium</button><button data-tag='low'>Low</button><input type='search' placeholder='Search findings'><span class='n'></span></div>" +
-    "<div class='ticketbar'><button type='button' id='tkCsv'>Download tickets (CSV)</button><button type='button' id='tkAll'>Copy all tickets</button><span class='hint'>Each finding has a stable reference (AH-xxxxxx) that stays the same from report to report. Use <b>Copy ticket</b> on a row, <b>Copy all tickets</b>, or the CSV to hand findings to your IT provider or MSP as work items; the next report's <a href='#progress'>Progress since last report</a> shows which were resolved. The same CSV is saved next to this report: <a href='$(HtmlEnc ([uri]::EscapeDataString($ticketCsvName)))'>$(HtmlEnc $ticketCsvName)</a>.</span></div>"
+    "<div class='ticketbar'><button type='button' id='tkCsv'>Download tickets (CSV)</button><button type='button' id='tkAll'>Copy all tickets</button><span class='hint'>Each finding has a stable reference (AH-xxxxxx) that stays the same from report to report. Use <b>View ticket</b> on a row to preview the ticket text (steps, owner, standards) and copy it, <b>Copy all tickets</b>, or the CSV to hand findings to your IT provider or MSP as work items; the next report's <a href='#progress'>Progress since last report</a> shows which were resolved. The same CSV is saved next to this report: <a href='$(HtmlEnc ([uri]::EscapeDataString($ticketCsvName)))'>$(HtmlEnc $ticketCsvName)</a>.</span></div>" +
+    "<div id='tkModal' class='modal' hidden><div class='modal-box' role='dialog' aria-modal='true' aria-labelledby='tkTitle'><div class='modal-head'><b id='tkTitle'>Ticket</b><button type='button' id='tkClose'>Close</button></div><pre id='tkText'></pre><div class='modal-actions'><button type='button' id='tkCopy'>Copy ticket</button><span class='hint'>Paste into your ticketing system or an email to your IT provider or MSP. Esc closes.</span></div></div></div>"
 } else { '' }
 $summaryTable = New-Object System.Text.StringBuilder
 [void]$summaryTable.Append("<table class='grid'><thead><tr><th style='width:26%'>Control</th><th style='width:14%'>Status</th><th>Evidence</th><th style='width:12%'>Detail</th></tr></thead><tbody>")
@@ -3014,8 +3064,8 @@ $(New-HtmlTable $casRows -Columns 'Mailbox','POP enabled','IMAP enabled','SMTP A
 }
 
 $iocSectionHtml = @"
-<section id='ioc'><h2>4. Possible Indications of Compromise (last $AuditDays days)</h2>
-<p class='meta'>Nothing in this section is a confirmed incident. Each item is a trace that attackers leave behind in almost every Microsoft 365 compromise, and that legitimate administration also leaves behind. The point is to ask: an executive or security officer takes each line to the person named and gets a yes-that-was-me, or escalates it the same day. Items marked <b>urgent</b> are the patterns most strongly associated with an active intrusion (federation changes, mailbox rules that hide mail, password sprays, legacy sign-ins, users Microsoft flags as at risk); items to <b>review</b> are normal administration that should match a ticket or a known reason. Sources: the Entra directory audit log, the Entra sign-in log (Entra ID P1), Entra ID Protection (P2), application registrations and Exchange Online.</p>
+<section id='ioc'><h2>3. Review These Now: Possible Indications of Compromise (last $AuditDays days)</h2>
+<p class='meta'><b>Read this section before the plan.</b> Nothing in this section is a confirmed incident. Each item is a trace that attackers leave behind in almost every Microsoft 365 compromise, and that legitimate administration also leaves behind. The point is to ask: an executive or security officer takes each line to the person named and gets a yes-that-was-me, or escalates it the same day. Items marked <b>urgent</b> are the patterns most strongly associated with an active intrusion (federation changes, mailbox rules that hide mail, password sprays, legacy sign-ins, users Microsoft flags as at risk); items to <b>review</b> are normal administration that should match a ticket or a known reason. Sources: the Entra directory audit log, the Entra sign-in log (Entra ID P1), Entra ID Protection (P2), application registrations and Exchange Online.</p>
 $(New-KvTable $iocKv -Issues $iocKvIssues)
 $(if ($iocSignInNote) { "<p class='note'>$(HtmlEnc $iocSignInNote)</p>" })
 $(if ($iocRiskNote) { "<p class='note'>$(HtmlEnc $iocRiskNote)</p>" })
@@ -3128,7 +3178,7 @@ $governanceKv = [ordered]@{
     'Previous report'                = $(if ($previous) { [string](Get-JsonProp $previous 'Date') } else { 'None: this is the baseline' })
     'Since the previous report'      = $(if ($previous) { "$improvedCount improved, $regressedCount regressed, $resolvedCount finding(s) resolved, $newCount new" } else { 'n/a' })
     'Open findings by phase'         = $phaseCounts
-    'Possible indications of compromise' = $(if ($iocCollected) { "$iocUrgentCount urgent, $iocReviewCount to review (section 4)" } else { 'Not collected' })
+    'Possible indications of compromise' = $(if ($iocCollected) { "$iocUrgentCount urgent, $iocReviewCount to review (section 3)" } else { 'Not collected' })
     'Review cadence'                 = 'Run monthly. The security officer and IT provider review each report and raise tickets the same week; the IT committee reviews quarterly; the board receives this summary at least annually and after any incident.'
     'Next report due'                = $ReportDate.AddDays(30).ToString('MMMM d, yyyy')
     'Standards referenced'           = 'NIST CSF 2.0, NIST SP 800-63B, CIS Microsoft 365 Foundations Benchmark, CIS Controls v8, FFIEC IT Examination Handbook, FFIEC Authentication Guidance (2021), FFIEC CAT / NCUA ACET domains (section 5)'
@@ -3145,8 +3195,8 @@ $html = @"
 <p class='legend'><span class='i'>i</span> marks a configuration issue anywhere in this report. Click the icon to read why it matters and what to do about it.</p>
 <div class='howto'><b>How to use this report.</b><ul>
 <li><b>Board:</b> the paragraph above, the tiles and "Progress since last report" answer three questions: are we secure, are we improving, is there a plan.</li>
-<li><b>IT committee:</b> add the Roadmap in section 3 and the "Governance and review" table below; approve the phases, the owners, and any licence or budget decisions.</li>
-<li><b>Security officer and IT provider / MSP:</b> work section 4 (indications of compromise) today, then section 3 from the top. Every finding has step-by-step instructions, an owner and an effort estimate, and copies straight into a ticket.</li>
+<li><b>IT committee:</b> add the Roadmap in section 4 and the "Governance and review" table below; approve the phases, the owners, and any licence or budget decisions.</li>
+<li><b>Security officer and IT provider / MSP:</b> work section 3 (review these now) today, then section 4 from the top. Every finding has step-by-step instructions, an owner and an effort estimate, and copies straight into a ticket.</li>
 <li><b>Auditors:</b> section 2 is the control test, section 5 maps each control to NIST CSF 2.0, NIST SP 800-63B, the CIS Microsoft 365 Benchmark, CIS Controls v8 and FFIEC / NCUA expectations, and sections 6 to 18 hold the evidence behind every status.</li>
 <li><b>Examiners:</b> the monthly history, "Progress since last report" and the sign-off block show that the institution measures, reviews, plans and improves its Microsoft 365 controls.</li></ul></div>
 <div class='kpis'>$($kpiHtml.ToString())</div>
@@ -3172,7 +3222,8 @@ $(New-HtmlTable $skuRows -Columns 'License SKU','Enabled','Consumed','Status')
 $($summaryTable.ToString())
 </section>
 
-<section id='remediation'><h2>3. Remediation Plan</h2>
+$iocSectionHtml
+<section id='remediation'><h2>4. Remediation Plan</h2>
 <p class='meta'>Every control from the summary that is not fully met, plus every Microsoft Secure Score improvement action that still has points available, ranked by priority (Critical, High, Medium, Low); within a priority the measured controls come first, then Secure Score actions by points available. Findings: $(HtmlEnc $remediationCounts). $(if ($null -ne $scoreCurrent) { "Secure Score $scoreCurrent of $scoreMax points; target $scoreTarget points ($TargetScorePercent%); gap $scoreGap points." } else { 'Secure Score not available.' })$(if ($scoreIgnored) { " $scoreIgnored Secure Score action(s) marked ignored, third-party or resolved in Defender are not listed." })</p>
 <h3>Roadmap</h3>
 <p class='meta'>The same findings laid out as a plan: what to do this week, within 30 days, within 90 days, and over the year. Each phase lists the finding, its reference, who does it and how long it takes. Click a finding to jump to its step-by-step instructions below. Critical items are this week because they are either active exposure or the controls that stop account takeover; High items close the gaps attackers use most; Medium items harden the environment; Low items are housekeeping and licence decisions for the committee.</p>
@@ -3182,7 +3233,6 @@ $ticketBar
 $($remHtml.ToString())
 <script type='application/json' id='tkData'>$ticketJson</script><script type='application/json' id='tkMeta'>$ticketMeta</script>
 </section>
-$iocSectionHtml
 $frameworkSectionHtml
 $mdmSection
 
@@ -3335,7 +3385,14 @@ $spoSectionHtml
       if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(s).then(function(){ flash(b,'Copied'); },fallback); } else { fallback(); }
     }
     function csvCell(v){ v=(v==null?'':String(v)); return '"'+v.replace(/"/g,'""')+'"'; }
-    document.querySelectorAll('button.tk').forEach(function(b){ b.addEventListener('click',function(){ var t=tk[parseInt(b.getAttribute('data-i'),10)]; if(t) copyText(ticketText(t),b); }); });
+    var modal=document.getElementById('tkModal'), tkTextEl=document.getElementById('tkText'), tkTitleEl=document.getElementById('tkTitle'), tkCopyBtn=document.getElementById('tkCopy'), tkCloseBtn=document.getElementById('tkClose'), currentTicket='';
+    function openTicket(t){ if(!modal) return; currentTicket=ticketText(t); tkTitleEl.textContent='Ticket '+t.Ref+': '+t.Finding; tkTextEl.textContent=currentTicket; modal.removeAttribute('hidden'); document.body.classList.add('noscroll'); tkCopyBtn.focus(); }
+    function closeTicket(){ if(!modal||modal.hasAttribute('hidden')) return; modal.setAttribute('hidden',''); document.body.classList.remove('noscroll'); }
+    document.querySelectorAll('button.tk').forEach(function(b){ b.addEventListener('click',function(){ var t=tk[parseInt(b.getAttribute('data-i'),10)]; if(t) openTicket(t); }); });
+    if(tkCopyBtn) tkCopyBtn.addEventListener('click',function(){ copyText(currentTicket,tkCopyBtn); });
+    if(tkCloseBtn) tkCloseBtn.addEventListener('click',closeTicket);
+    if(modal) modal.addEventListener('click',function(e){ if(e.target===modal) closeTicket(); });
+    document.addEventListener('keydown',function(e){ if(e.key==='Escape') closeTicket(); });
     var all=document.getElementById('tkAll'); if(all) all.addEventListener('click',function(){ copyText(tk.map(ticketText).join('\n\n----------------------------------------\n\n'),all); });
     var csv=document.getElementById('tkCsv'); if(csv) csv.addEventListener('click',function(){
       var cols=['Ref','Priority','Phase','Finding','Current state','Recommended action','Owner','Effort','Prerequisite','Steps','Done when','Standards','Why it matters','Secure Score points','Report section','Link'];

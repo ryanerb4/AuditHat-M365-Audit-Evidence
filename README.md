@@ -30,7 +30,7 @@ its existing staff and IT provider, and that auditors and examiners recognise as
 
 | Cadence | Who | What happens |
 |---|---|---|
-| **Monthly** | Security officer or IT provider / MSP | Run the script (10 to 30 minutes). Work section 4 (indications of compromise) the same day. Turn the Remediation Plan into tickets (Copy ticket / CSV) and assign owners. File the report in the evidence folder; the history file updates itself |
+| **Monthly** | Security officer or IT provider / MSP | Run the script (10 to 30 minutes). Work section 3 (review these now: indications of compromise) the same day. Turn the Remediation Plan into tickets (Copy ticket / CSV) and assign owners. File the report in the evidence folder; the history file updates itself |
 | **Monthly, next run** | Same | "Progress since last report" shows what closed, what regressed and what is new. Chase open tickets |
 | **Quarterly** | IT steering committee | Review the Executive Summary, the Roadmap and the Governance table; approve phases, owners, licences and budget; record decisions in minutes. Sign the review line |
 | **At least annually, and after any incident** | Board (or its risk / audit committee) | Receive the Executive Summary (narrative, tiles, trend charts, progress). Sign the "noted by the board" line |
@@ -266,10 +266,11 @@ without that person needing to understand PowerShell or Microsoft Graph.
 - **Stable reference.** Every row in the Remediation Plan has a reference such as `AH-3F2A1C`. It
   is derived from the finding's name, so the same finding has the same reference in every report,
   on every tenant. Put it in the ticket title and the next report tells you whether it is closed.
-- **Copy ticket.** The button on each row copies ready-to-paste ticket text: reference, priority,
-  finding, client, report date and section, current state, requested change, why it matters,
-  Secure Score points available, the Defender link where there is one, and an acceptance line
-  ("the next AuditHat report lists AH-3F2A1C as resolved").
+- **View ticket.** The button on each row opens a preview of the ticket text: reference, priority,
+  phase, finding, client, report date and section, current state, requested change, suggested owner
+  and effort, prerequisite, the numbered steps, the "done when" test, standards references, Secure
+  Score points, the portal or guidance link, and an acceptance line ("the next AuditHat report lists
+  AH-3F2A1C as resolved"). **Copy ticket** in the preview copies it; Esc or Close dismisses it.
 - **Copy all tickets** copies every open finding in that format, separated by rules, for an email
   or a meeting pack.
 - **Download tickets (CSV)** saves the plan as a spreadsheet (Ref, Priority, Finding, Current state,
@@ -289,8 +290,8 @@ without that person needing to understand PowerShell or Microsoft Graph.
 |---|---------|--------|-----------------|
 | 1 | Executive Summary | organization, subscribedSkus, security/secureScores, history file, computed | Narrative paragraph and KPI tiles (Secure Score vs target, controls met, Critical/High and Medium findings, users without MFA, stale users, Global Administrators, devices, devices not in Intune, stale devices), top five priorities, **Progress since last report** (change log of controls, findings and counts versus the previous run, Secure Score trend chart with target line, open findings by priority chart), privacy statement, tenant details with bulleted licensed capabilities, directory synchronization status (Entra Connect, AD domains, sync server), verified domains table, subscriptions |
 | 2 | Security Controls Summary | computed from everything below | One row per control (MFA, legacy auth, device access, Intune, TAP, device join, forwarding, consent, **email authentication**, **email protection**, **endpoint protection**, Secure Score, privileged roles): Status, Evidence, link to detail. Only **enabled** CA policies count as enforced |
-| 3 | Remediation Plan | summary results, secureScoreControlProfiles, directoryRoles, subscribedSkus, built-in playbooks | **Roadmap** by phase (this week, 30 days, 90 days, 12 months) then every failed control with a recommended action, **step-by-step instructions, owner, effort, prerequisite and a done-when test**, privileged-access findings (Global Admins without MFA, too many or a single Global Admin), licensing gaps, and every unimplemented Secure Score action with points available. Sorted Critical, High, Medium, Low, then by points. Each finding carries a stable reference (`AH-xxxxxx`), a **Copy ticket** button, priority filters and a **CSV download**; the same CSV is written next to the report |
-| 4 | Possible Indications of Compromise | auditLogs/directoryAudits (targeted activities), auditLogs/signIns (P1), identityProtection (P2), applications, Exchange inbox rules, mailbox and recipient permissions, transport rules | What an attacker leaves behind: domain/federation changes, inbox rules that hide, delete or forward mail, risky users, legacy sign-ins, password sprays, MFA denials, Conditional Access blocks, sign-ins from several countries, new role assignments, MFA method changes, admin password resets, policy changes, new app credentials and apps, new accounts and guests, Full Access and Send As grants, transport rule changes, mailbox auditing. Rolled up as *urgent* (investigate today) and *to review* (match to a ticket) |
+| 3 | Review These Now: Possible Indications of Compromise | auditLogs/directoryAudits (targeted activities), auditLogs/signIns (P1), identityProtection (P2), applications, Exchange inbox rules, mailbox and recipient permissions, transport rules | What an attacker leaves behind: domain/federation changes, inbox rules that hide, delete or forward mail, risky users, legacy sign-ins, password sprays, MFA denials, Conditional Access blocks, sign-ins from several countries, new role assignments, MFA method changes, admin password resets, policy changes, new app credentials and apps, new accounts and guests, Full Access and Send As grants, transport rule changes, mailbox auditing. Rolled up as *urgent* (investigate today) and *to review* (match to a ticket) |
+| 4 | Remediation Plan | summary results, secureScoreControlProfiles, directoryRoles, subscribedSkus, built-in playbooks | **Roadmap** by phase (this week, 30 days, 90 days, 12 months) then every failed control with a recommended action, **step-by-step instructions, owner, effort, prerequisite and a done-when test**, privileged-access findings (Global Admins without MFA, too many or a single Global Admin), licensing gaps, and every unimplemented Secure Score action with points available. Sorted Critical, High, Medium, Low, then by points. Each finding carries a stable reference (`AH-xxxxxx`), a **Copy ticket** button, priority filters and a **CSV download**; the same CSV is written next to the report |
 | 5 | Framework Alignment | computed from section 2 plus a built-in mapping table | Every measured control with its status and the expectation it answers in NIST CSF 2.0 / SP 800-63B, the CIS Microsoft 365 Foundations Benchmark (v4.0 numbering), CIS Controls v8 and FFIEC / NCUA (IT Handbook, 2021 Authentication Guidance, CAT / ACET domain codes); filters Met / Gap / Not measured; a plain statement of what the report does not test |
 | 6 | MDM Compliance Policies | deviceCompliancePolicies | Intune compliance policies per platform: Basics / Settings / Actions for noncompliance / Assignments |
 | 7 | Intune Policies | deviceConfigurations, configurationPolicies (settings catalog), intents (endpoint security), enrollment configs, app protection | Every Intune policy and the settings behind it |
@@ -320,7 +321,7 @@ without that person needing to understand PowerShell or Microsoft Graph.
 10. Is Temporary Access Pass implemented
 11. Is automatic email forwarding outside the tenant allowed or in use
 12. Privileged users by role
-13. Is there any sign the tenant or a mailbox has been compromised (section 4)
+13. Is there any sign the tenant or a mailbox has been compromised (section 3)
 14. Who outside the institution can reach staff or content through Teams, and which teams have guests
 15. How far can documents be shared from SharePoint and OneDrive, and who has been sharing externally
 
@@ -409,8 +410,8 @@ Short answers to the questions banks, credit unions and their IT providers ask (
 search engine or an AI assistant) when they start auditing Microsoft 365.
 
 **How do I audit Microsoft 365 security for a bank or credit union?**
-Run this script with a Global Reader account. Sections 1 to 3 give the committee the posture, the
-gaps and the plan; sections 6 onward are the evidence an examiner asks to see. Run it quarterly and
+Run this script with a Global Reader account. Sections 1 to 4 give the committee the posture, what to
+review today, the gaps and the plan; sections 6 onward are the evidence an examiner asks to see. Run it quarterly and
 keep the reports; the history file turns them into a trend.
 
 **How do I export all Intune policies and settings?**
@@ -425,11 +426,11 @@ device-based access are actually enforced for all users by an enabled policy, no
 
 **How do I find users without MFA in Microsoft 365?**
 Section 13 lists enabled accounts with no MFA method registered and the whole user list has a
-"No MFA" filter. Global Administrators without MFA appear as a Critical finding in section 3.
+"No MFA" filter. Global Administrators without MFA appear as a Critical finding in section 4.
 
 **Who has Global Administrator, and is that too many?**
 Section 14 groups members by role, Global Administrator first, with MFA state and last sign-in.
-Section 3 flags more than four or only one Global Administrator.
+Section 4 flags more than four or only one Global Administrator.
 
 **How do I audit Entra ID (Azure AD) users, guests and stale accounts?**
 Section 13: counts, last sign-in (needs Entra ID P1), licences, admin flag, devices per user, and
@@ -438,15 +439,18 @@ AD Governance Report.
 
 **How do I check SPF, DKIM and DMARC for my domain?**
 Section 15 resolves the public DNS records for every email-enabled domain and reads the DKIM signing
-state from Exchange Online, then rates each domain and explains what to fix.
+state from Exchange Online. SPF, DKIM and DMARC are three separate controls and three separate
+findings, because they are fixed in different places: SPF and DMARC are DNS records at your registrar
+or DNS host, DKIM is enabled on the Defender portal DKIM page (linked from the finding) plus two DNS
+CNAME records. Each finding spells out the record to publish.
 
 **What is Microsoft Secure Score and what target should we set?**
 Secure Score is Microsoft's own percentage of recommended security actions you have completed,
 compared with similar organizations. The report shows current, maximum, comparison averages and a
-target (`-TargetScorePercent`, default 80%). Every open action with points appears in section 3.
+target (`-TargetScorePercent`, default 80%). Every open action with points appears in section 4.
 
 **How can I tell whether our Microsoft 365 tenant has been compromised?**
-Section 4 collects the traces attackers leave: inbox rules that hide or forward mail, federation
+Section 3, placed before the plan on purpose, collects the traces attackers leave: inbox rules that hide or forward mail, federation
 changes, new administrators, MFA methods added, admin password resets, new app secrets, successful
 legacy sign-ins, password sprays, sign-ins from unexpected countries, and users Entra ID Protection
 flags as at risk. Items marked urgent should be checked the same day; the rest should match a
@@ -477,6 +481,18 @@ and indications of compromise while they matter and to show examiners a real tre
 keeps 60 runs (five years of monthly reports). Because it needs an interactive MFA sign-in it is run
 by a person rather than a scheduled task; that is deliberate for a read-only tool with Global Reader
 rights. See "Operating model" above for who reviews what and when.
+
+**Why are user consent and Intune compliance policies rated Critical?**
+Consent phishing (a user approving a malicious app that then reads mail and files through the API,
+bypassing MFA) is how several financial institutions have been compromised, so unrestricted user
+consent is Critical. Device compliance (encryption, patching, screen lock) is a baseline FFIEC and
+NCUA expectation for anything that touches customer data, so a tenant with no compliance policies is
+Critical, and a tenant without an Intune licence at all is High.
+
+**Why do OneDrive, site and team owners show as hashes?**
+The tenant's report privacy setting ("Display concealed user, group, and site names in all reports")
+is on. The report flags it as a High finding with the exact path to clear it in the Microsoft 365
+admin center; the script itself never changes tenant settings. Names appear on the next run.
 
 **Which MFA product do we have, and are we ready for passkeys?**
 Section 10 names the MFA product (Microsoft Entra MFA, a federated provider such as ADFS, Okta or

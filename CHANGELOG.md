@@ -31,6 +31,16 @@ First public release.
   anti-phishing, Safe Links, Safe Attachments, Defender for Endpoint devices and scores.
 - Directory synchronization status (Entra Connect, on-premises AD domains, sync server) and a link to
   the companion AuditHat AD Governance Report.
+- "Review These Now: Possible Indications of Compromise" is section 3, ahead of the Remediation Plan
+  (now section 4).
+- View ticket: each finding opens a preview of the full ticket text with a Copy button, instead of
+  copying blind.
+- Email authentication split into three controls and findings: SPF record (DNS), DKIM signing
+  (Exchange Online and DNS, linked to the Defender DKIM page) and DMARC policy (DNS), each with its own
+  playbook, framework mapping and guidance link.
+- Priorities: User consent to applications and Intune compliance policies are Critical; Intune not
+  licensed is High. New High finding when usage-report names are concealed, with the admin-center
+  path to clear the setting.
 - Remediation Plan as a roadmap: findings grouped into this week / 30 days / 90 days / 12 months,
   and every finding carries a playbook (owner, effort, prerequisite, numbered steps in the admin
   centers, "done when" test) plus framework references; Secure Score actions are matched to the same
