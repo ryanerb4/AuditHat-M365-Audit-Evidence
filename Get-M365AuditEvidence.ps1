@@ -1319,7 +1319,7 @@ if (-not @($regDetails).Count -and @($users).Count) {
         } catch { $regBatchFailed = $true; $script:GraphFailures['MFA registration details'] = "authentication methods per user: $(Get-GraphErrorText $_)"; Write-Warning "Could not read authentication methods per user: $(Get-GraphErrorText $_)" }
     }
     if (-not $regBatchFailed -and $regFallback.Count) {
-        $regDetails = @($regFallback); $script:GraphFailures.Remove('MFA registration details'); $script:RegFromMethods = $true
+        $regDetails = $regFallback.ToArray(); $script:GraphFailures.Remove('MFA registration details'); $script:RegFromMethods = $true
         $RegMap = @{}; foreach ($r in $regDetails) { $RegMap[$r.id] = $r }
         Write-Host "  Registration facts built for $($regDetails.Count) accounts from their authentication methods (Entra ID Free fallback)." -ForegroundColor DarkGray
     }
@@ -1793,7 +1793,7 @@ if (-not $SkipExchange) {
                             foreach ($rec in $page) { try { $d = $rec.AuditData | ConvertFrom-Json; if ($d) { $out.Add($d) } } catch { Write-Verbose 'Audit record was not JSON.' } }
                         } while ($page.Count -eq 5000 -and $out.Count -lt $MaxRecords)
                     } catch { $script:GraphFailures["audit log: $What"] = $_.Exception.Message; Write-Warning "Audit log search ($What) failed: $($_.Exception.Message)" }
-                    return @($out)
+                    return $out.ToArray()
                 }
                 $ualCollected = $true
                 $sharingEvents = Search-AuditLogSafe -Operations @('AnonymousLinkCreated', 'SharingInvitationCreated', 'AddedToSecureLink', 'SecureLinkCreated', 'SharingSet', 'CompanyLinkCreated') -Days $AuditDays -MaxRecords 20000 -What 'sharing'
