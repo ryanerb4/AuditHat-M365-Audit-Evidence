@@ -3771,6 +3771,8 @@ $(New-HtmlTable $odRows -Id 'tbl-onedrive' -Filters $OdFilters -Columns 'Owner',
 # ---- Executive page: verdict, headlines, scorecard, rocks (90-day objectives), issues list, plan, board-report mapping
 $critCount = @($remediationSorted | Where-Object { $_.Priority -eq 'Critical' }).Count
 $highCount = @($remediationSorted | Where-Object { $_.Priority -eq 'High' }).Count
+$remIndexByRef = @{}; $ri = 0; foreach ($x in $remediationSorted) { $remIndexByRef[[string]$x.Ref] = $ri; $ri++ }
+function Get-FindingLinkHtml { param($Finding, [switch]$Ticket) "<a href='#rem-$($Finding.Ref)'>$(HtmlEnc $Finding.Finding)</a>$(if ($Ticket) { " <button type='button' class='tk' data-i='$($remIndexByRef[[string]$Finding.Ref])' title='Preview and copy the ticket for this item'>View ticket</button>" })" }
 $controlsPct = if ($controlsRated.Count) { [math]::Round(100 * $controlsMet.Count / $controlsRated.Count) } else { 0 }
 $maturity = if ($controlsPct -lt 40) { 'Baseline' } elseif ($controlsPct -lt 60) { 'Evolving' } elseif ($controlsPct -lt 80) { 'Intermediate' } elseif ($controlsPct -lt 95) { 'Advanced' } else { 'Leading' }
 $verdict = if ($iocUrgentCount -gt 0 -or $critCount -gt 0 -or $ualEnabled -eq $false) {
@@ -3838,7 +3840,7 @@ $repeatRows = @()
 if ($priorSnaps.Count -ge 2) {
     foreach ($fnd in $remediationSorted) {
         $seen = @($priorSnaps | Where-Object { @(Get-JsonProp $_ 'FindingNames') -contains $fnd.Finding })
-        if ($seen.Count -ge 2) { $repeatRows += [ordered]@{ 'Finding' = $fnd.Finding; 'Priority' = $fnd.Priority; 'Open in reports' = $seen.Count + 1; 'First seen' = ([string](Get-JsonProp $seen[0] 'Date')).Substring(0, 10); 'Owner' = $(if ($fnd.Playbook) { [string]$fnd.Playbook.Owner } else { 'IT provider / MSP' }); '_issues' = @{ 'Open in reports' = 'repeat-finding' }; '_links' = @{ 'Finding' = "#rem-$($fnd.Ref)" } } }
+        if ($seen.Count -ge 2) { $repeatRows += [ordered]@{ 'Finding' = $fnd.Finding; 'Priority' = $fnd.Priority; 'Open in reports' = $seen.Count + 1; 'First seen' = ([string](Get-JsonProp $seen[0] 'Date')).Substring(0, 10); 'Owner' = $(if ($fnd.Playbook) { [string]$fnd.Playbook.Owner } else { 'IT provider / MSP' }); 'Ref' = $fnd.Ref; '_issues' = @{ 'Open in reports' = 'repeat-finding' }; '_html' = @{ 'Finding' = (Get-FindingLinkHtml $fnd -Ticket) } } }
     }
 }
 $repeatRows = @($repeatRows | Sort-Object { -[int]$_['Open in reports'] } | Select-Object -First 15)
@@ -3864,7 +3866,8 @@ foreach ($rt in $RockThemes) {
     $urgentIn = @($open | Where-Object { $_.Priority -in @('Critical', 'High') }).Count
     $status = if ($open.Count -eq 0) { 'Done' } elseif (-not $previous) { 'Not started' } elseif ($open.Count -lt $prevOpen) { 'On track' } elseif ($open.Count -gt $prevOpen) { 'Off track' } else { 'Not started' }
     $due = if ($open.Count -eq 0) { 'Complete' } elseif ($urgentIn) { $ReportDate.AddDays(30).ToString('MMMM d, yyyy') } elseif (@($open | Where-Object { $_.Priority -eq 'Medium' }).Count) { $ReportDate.AddDays(90).ToString('MMMM d, yyyy') } else { $ReportDate.AddDays(365).ToString('MMMM d, yyyy') }
-    $rockRows += [ordered]@{ 'Rock (90-day objective)' = $rt.Rock; 'Outcome' = $rt.Objective; 'Owner' = $(if ($owners) { $owners[0] } else { '' }); 'Open items' = "$($open.Count)$(if ($urgentIn) { " ($urgentIn Critical/High)" })"; 'Due' = $due; 'Status' = $status; '_tags' = $status.ToLower().Replace(' ', '') }
+    $openHtml = if ($open.Count) { "<b>$($open.Count)</b>$(if ($urgentIn) { " <span class='muted'>($urgentIn Critical/High)</span>" })<ul class='perms'>" + ((@($open | Select-Object -First 8) | ForEach-Object { "<li><span class='muted'>$(HtmlEnc $_.Priority):</span> $(Get-FindingLinkHtml $_)</li>" }) -join '') + "</ul>$(if ($open.Count -gt 8) { "<a href='#remediation' class='muted'>and $($open.Count - 8) more in the plan</a>" })" } else { "<span class='muted'>0 (complete)</span>" }
+    $rockRows += [ordered]@{ 'Rock (90-day objective)' = $rt.Rock; 'Outcome' = $rt.Objective; 'Owner' = $(if ($owners) { $owners[0] } else { '' }); 'Open items' = "$($open.Count)$(if ($urgentIn) { " ($urgentIn Critical/High)" })"; 'Due' = $due; 'Status' = $status; '_tags' = $status.ToLower().Replace(' ', ''); '_html' = @{ 'Open items' = $openHtml } }
 }
 $rockRows = @($rockRows)
 # Issues list: what the committee must decide or unblock (EOS: identify, discuss, solve)
@@ -3873,11 +3876,13 @@ $issueRows = @()
 foreach ($fnd in $remediationSorted) {
     $isLic = ($fnd.Finding -match '(?i)not licensed') -or ($fnd.Playbook -and ([string]$fnd.Playbook.Owner) -match '(?i)committee|licen|budget')
     $isPol = $PolicyDecisionControls -contains $fnd.Finding
-    if ($isLic -or $isPol) { $issueRows += [ordered]@{ 'Issue' = $fnd.Finding; 'Type' = $(if ($isLic) { 'Licence / budget decision' } else { 'Policy decision' }); 'What the committee is asked to decide' = ([string]$fnd.Action -split '(?<=\.)\s+')[0]; 'Who' = "IT committee decides; $(if ($fnd.Playbook) { ([string]$fnd.Playbook.Owner -split ';')[0] } else { 'IT provider / MSP' }) implements"; 'Phase' = $fnd.Phase; '_links' = @{ 'Issue' = "#rem-$($fnd.Ref)" } } }
+    if ($isLic -or $isPol) { $issueRows += [ordered]@{ 'Issue' = $fnd.Finding; 'Type' = $(if ($isLic) { 'Licence / budget decision' } else { 'Policy decision' }); 'What the committee is asked to decide' = ([string]$fnd.Action -split '(?<=\.)\s+')[0]; 'Who' = "IT committee decides; $(if ($fnd.Playbook) { ([string]$fnd.Playbook.Owner -split ';')[0] } else { 'IT provider / MSP' }) implements"; 'Phase' = $fnd.Phase; '_html' = @{ 'Issue' = (Get-FindingLinkHtml $fnd -Ticket) } } }
 }
-foreach ($rr in $repeatRows) { $issueRows += [ordered]@{ 'Issue' = $rr['Finding']; 'Type' = 'Repeat finding'; 'What the committee is asked to decide' = "Open for $($rr['Open in reports']) reports since $($rr['First seen']): name the owner and date, and remove what is blocking it."; 'Who' = $rr['Owner']; 'Phase' = ''; '_links' = $rr['_links'] } }
-if ($ualEnabled -eq $false) { $issueRows += [ordered]@{ 'Issue' = 'Activity logging is off'; 'Type' = 'Coverage gap'; 'What the committee is asked to decide' = 'Direct the IT provider to turn on the unified audit log this week; until then intrusion and data-leak checks cannot be completed.'; 'Who' = 'IT committee directs; IT provider / MSP implements'; 'Phase' = 'Now: this week'; '_links' = @{ 'Issue' = '#ioc' } } }
-if ($reportConcealedNote) { $issueRows += [ordered]@{ 'Issue' = 'Usage report names are concealed'; 'Type' = 'Coverage gap'; 'What the committee is asked to decide' = 'Approve clearing the report privacy setting so OneDrive, site and team owners are named.'; 'Who' = 'IT committee approves; IT provider / MSP implements'; 'Phase' = 'Now: this week'; '_links' = @{ 'Issue' = '#sharepoint' } } }
+foreach ($rr in $repeatRows) { $issueRows += [ordered]@{ 'Issue' = $rr['Finding']; 'Type' = 'Repeat finding'; 'What the committee is asked to decide' = "Open for $($rr['Open in reports']) reports since $($rr['First seen']): name the owner and date, and remove what is blocking it."; 'Who' = $rr['Owner']; 'Phase' = ''; '_html' = $rr['_html'] } }
+$ualFinding = $remediationSorted | Where-Object { $_.Finding -eq 'Audit logging (unified audit log)' } | Select-Object -First 1
+$concealFinding = $remediationSorted | Where-Object { $_.Finding -eq 'Usage report names are concealed' } | Select-Object -First 1
+if ($ualEnabled -eq $false) { $issueRows += [ordered]@{ 'Issue' = 'Activity logging is off'; 'Type' = 'Coverage gap'; 'What the committee is asked to decide' = 'Direct the IT provider to turn on the unified audit log this week; until then intrusion and data-leak checks cannot be completed.'; 'Who' = 'IT committee directs; IT provider / MSP implements'; 'Phase' = 'Now: this week'; '_html' = @{ 'Issue' = $(if ($ualFinding) { "<a href='#rem-$($ualFinding.Ref)'>Activity logging is off</a> <button type='button' class='tk' data-i='$($remIndexByRef[[string]$ualFinding.Ref])'>View ticket</button>" } else { "<a href='#ioc'>Activity logging is off</a>" }) } } }
+if ($reportConcealedNote) { $issueRows += [ordered]@{ 'Issue' = 'Usage report names are concealed'; 'Type' = 'Coverage gap'; 'What the committee is asked to decide' = 'Approve clearing the report privacy setting so OneDrive, site and team owners are named.'; 'Who' = 'IT committee approves; IT provider / MSP implements'; 'Phase' = 'Now: this week'; '_html' = @{ 'Issue' = $(if ($concealFinding) { "<a href='#rem-$($concealFinding.Ref)'>Usage report names are concealed</a> <button type='button' class='tk' data-i='$($remIndexByRef[[string]$concealFinding.Ref])'>View ticket</button>" } else { "<a href='#sharepoint'>Usage report names are concealed</a>" }) } } }
 if ($shareSitesDenied -gt 0) { $issueRows += [ordered]@{ 'Issue' = "$shareSitesDenied site(s) could not be read by the account that ran the report"; 'Type' = 'Coverage gap'; 'What the committee is asked to decide' = 'Run the report as a SharePoint administrator with site access, or accept that sharing on those sites is unverified.'; 'Who' = 'Security officer'; 'Phase' = 'Next 30 days'; '_links' = @{ 'Issue' = '#sharing' } } }
 if ($script:HasEntraP1 -eq $false) { $issueRows += [ordered]@{ 'Issue' = 'Entra ID P1 not licensed'; 'Type' = 'Coverage gap'; 'What the committee is asked to decide' = 'Without P1 there is no Conditional Access, sign-in log or risk policy; decide whether to license it (included in Business Premium).'; 'Who' = 'IT committee'; 'Phase' = 'Next 90 days'; '_links' = @{ 'Issue' = '#remediation' } } }
 $issueRows = @($issueRows)
@@ -3962,7 +3967,7 @@ $html = @"
 </div>
 <div class='eos-col'>
 <h3>Top priorities (next 30 days)</h3>
-$(if ($remediationSorted.Count) { "<ol class='prio'>" + ((@($remediationSorted | Select-Object -First 5) | ForEach-Object { "<li><span class='badge $($_.Priority)'>$(HtmlEnc $_.Priority)</span><div><a href='#rem-$($_.Ref)'>$(HtmlEnc $_.Finding)</a><br><span class='who'>$(if ($_.Playbook) { "$(HtmlEnc (([string]$_.Playbook.Owner -split ';')[0])) &middot; $(HtmlEnc $_.Playbook.Effort)" } else { 'IT provider / MSP' }) &middot; $(HtmlEnc $_.Phase)</span></div></li>" }) -join '') + '</ol>' } else { "<p class='empty'>Nothing is due. Every measured control is in place.</p>" })
+$(if ($remediationSorted.Count) { "<ol class='prio'>" + ((@($remediationSorted | Select-Object -First 5) | ForEach-Object { "<li><span class='badge $($_.Priority)'>$(HtmlEnc $_.Priority)</span><div>$(Get-FindingLinkHtml $_ -Ticket)<br><span class='who'>$(if ($_.Playbook) { "$(HtmlEnc (([string]$_.Playbook.Owner -split ';')[0])) &middot; $(HtmlEnc $_.Playbook.Effort)" } else { 'IT provider / MSP' }) &middot; $(HtmlEnc $_.Phase)</span></div></li>" }) -join '') + '</ol>' } else { "<p class='empty'>Nothing is due. Every measured control is in place.</p>" })
 </div>
 </div>
 <h3>Scorecard</h3>

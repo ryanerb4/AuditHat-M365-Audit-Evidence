@@ -31,6 +31,8 @@ First public release.
   anti-phishing, Safe Links, Safe Attachments, Defender for Endpoint devices and scores.
 - Directory synchronization status (Entra Connect, on-premises AD domains, sync server) and a link to
   the companion AuditHat AD Governance Report.
+- First page: rocks list their open items as links to the plan; issues, repeat findings and top
+  priorities link to their plan row and carry a View ticket button.
 - Saved sign-in for scheduled runs: `-SaveSignIn` keeps the refresh token encrypted with Windows DPAPI for
   the current user and PC; later runs sign in silently and keep the rotated token; `-NonInteractive`
   never prompts (exit code 2 when the saved sign-in is unusable); `-ForgetSignIn` removes it;
