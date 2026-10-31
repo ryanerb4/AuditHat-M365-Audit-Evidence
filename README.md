@@ -94,7 +94,9 @@ Screenshots from a sample run (tenant names replaced). Click any image to view i
 **This script sends no data to Audit Hat or to any third party.** It is a free, purely internal tool
 provided for your own use to help you understand and reduce your Microsoft 365 risk.
 
-- It runs entirely on the computer where you start it.
+- It runs entirely on the computer where you start it. Nothing is stored between runs unless you ask
+  for `-SaveSignIn`, which keeps an encrypted refresh token for the Windows user on that PC (see
+  "Running on a schedule").
 - It reads your tenant with the account **you** sign in with, read-only, and writes the report only
   to the output folder on that computer (default `.\M365-Audit-Evidence`).
 - Audit Hat has no server side for this tool and receives nothing: no telemetry, no copies, no
@@ -152,6 +154,48 @@ separate Exchange sign-in; a Global Administrator fixes that once with the admin
 script prints.
 
 ---
+
+## Running on a schedule (saved sign-in)
+
+By default every run opens the browser for an MFA sign-in. For a monthly scheduled run, save the
+sign-in once and let the task reuse it:
+
+```powershell
+# 1. Once, interactively, as the Windows user that will run the task: sign in and save it
+.\Get-M365AuditEvidence.ps1 -SaveSignIn
+
+# 2. Later runs (and the task) sign in silently. -NonInteractive never prompts; it stops with exit code 2 if the saved sign-in no longer works.
+.\Get-M365AuditEvidence.ps1 -NonInteractive -NoOpen -SkipInboxRules
+
+# 3. Windows Task Scheduler, first day of every month at 06:00, as the same Windows user
+schtasks /Create /TN "AuditHat M365 Audit Evidence" /SC MONTHLY /D 1 /ST 06:00 /RL LIMITED ^
+  /TR "pwsh -NoProfile -ExecutionPolicy Bypass -File C:\Audit\Get-M365AuditEvidence.ps1 -NonInteractive -NoOpen -OutputFolder C:\Audit\Reports"
+
+# Remove the saved sign-in
+.\Get-M365AuditEvidence.ps1 -ForgetSignIn
+```
+
+What is saved and how it is protected:
+
+- Only the OAuth **refresh token** from the browser sign-in is kept, encrypted with Windows Data
+  Protection (DPAPI) for the current Windows user on the current computer, at
+  `%LOCALAPPDATA%\AuditHat\M365AuditEvidence.signin`. Another user or another PC cannot decrypt it.
+  No password is ever stored.
+- Anyone who can run code as that Windows user can use the token, so treat the account the way you
+  treat a service account: a dedicated **Global Reader** (plus View-Only Organization Management in
+  Exchange) with its own strong MFA, on a managed PC. Do not save a Global Administrator sign-in.
+- The token keeps working as long as it is used at least every 90 days and the account is not
+  changed. A password change, "revoke sessions", disabling the account or a Conditional Access
+  sign-in-frequency policy invalidates it; the next run then says so and, unless `-NonInteractive`,
+  falls back to the browser. Grant new permissions by running once with `-ForgetSignIn -SaveSignIn`.
+- The same saved sign-in also feeds the Exchange Online, Defender for Endpoint and Teams tokens, so a
+  scheduled run collects everything the interactive run does. Device-code sign-ins cannot be saved.
+- The script remains delegated and read-only: it acts only as that user, with that user's roles.
+  There is no application-only (certificate) mode by design, so there is never a credential that
+  works without a person having signed in with MFA.
+
+On Linux or macOS there is no DPAPI, so saved sign-ins are Windows-only; the script itself targets
+Windows PowerShell 5.1 and PowerShell 7 on Windows.
 
 ## Requirements
 
@@ -367,6 +411,10 @@ for the approver. The report never guesses.
 | `-NoOpen` | off | Do not open the finished report in the default browser |
 | `-TestPermissions` | off | Sign in, probe every Graph endpoint, resource token, module and licence the report depends on, print a table of what is missing (with the permission or licence to add), and exit without collecting |
 | `-SkipShareScan` | off | Skip the per-item sharing scan of SharePoint sites and OneDrive in section 19 (Teams, Exchange and guest access are still listed). The scan is capped at 80 sites, 1,500 items per library and 600 permission lookups |
+| `-SaveSignIn` | off | After the browser sign-in, keep the refresh token encrypted (DPAPI, this Windows user, this PC) so later runs need no prompt. See "Running on a schedule" |
+| `-ForgetSignIn` | off | Delete the saved sign-in and sign in interactively |
+| `-NonInteractive` | off | For scheduled tasks: use the saved sign-in or stop with exit code 2; never opens a browser or waits for a code; implies no report pop-up |
+| `-SignInCachePath` | `%LOCALAPPDATA%\AuditHat\M365AuditEvidence.signin` | Where the encrypted saved sign-in is kept |
 | `-SkipAuditLog` | off | Skip the unified audit log search (sharing events, download volumes, mailbox rule and permission changes) that feeds section 2; faster on very large tenants |
 | (none) | | **Version** is printed in the console banner, the report navigation and footer (`2026.10.31` style: year.month.day of the last change). The report links to this GitHub repository for source and updates |
 | `-NoHistory` | off | Do not read or write the per-tenant `<Client> - history.json` file; the progress section then shows only the current run |
@@ -516,9 +564,15 @@ licence or module to add. It collects and writes nothing.
 **How often should we run it, and can it be scheduled?**
 Monthly, plus before each exam and after any major change. Monthly is frequent enough to catch drift
 and indications of compromise while they matter and to show examiners a real trend; the history
-keeps 60 runs (five years of monthly reports). Because it needs an interactive MFA sign-in it is run
-by a person rather than a scheduled task; that is deliberate for a read-only tool with Global Reader
-rights. See "Operating model" above for who reviews what and when.
+keeps 60 runs (five years of monthly reports). It can run from Windows Task Scheduler: sign in once
+with `-SaveSignIn` as the Windows user that runs the task, then schedule `-NonInteractive -NoOpen`.
+The saved sign-in is an encrypted refresh token for a read-only account, never a password; see
+"Running on a schedule" for the protections and the account to use.
+
+**Does it have to sign in every time?**
+No. Without `-SaveSignIn` it does, because nothing is stored. With `-SaveSignIn` the refresh token is
+kept encrypted for your Windows user on your PC and reused silently until it expires (90 days unused)
+or the account changes; `-ForgetSignIn` removes it.
 
 **Why are user consent and Intune compliance policies rated Critical?**
 Consent phishing (a user approving a malicious app that then reads mail and files through the API,

@@ -31,6 +31,10 @@ First public release.
   anti-phishing, Safe Links, Safe Attachments, Defender for Endpoint devices and scores.
 - Directory synchronization status (Entra Connect, on-premises AD domains, sync server) and a link to
   the companion AuditHat AD Governance Report.
+- Saved sign-in for scheduled runs: `-SaveSignIn` keeps the refresh token encrypted with Windows DPAPI for
+  the current user and PC; later runs sign in silently and keep the rotated token; `-NonInteractive`
+  never prompts (exit code 2 when the saved sign-in is unusable); `-ForgetSignIn` removes it;
+  `-SignInCachePath` sets the location. Task Scheduler example in the README.
 - Executive Summary rebuilt as a one-page board view in the EOS pattern: verdict (Act now / Needs
   attention / In good shape) with reason and chips; four headline tiles with the rest folded; Headlines
   (good and bad news); To-dos this week; Scorecard (goal, actual, on/off track, movement since last

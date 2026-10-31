@@ -114,7 +114,11 @@ param(
     [switch]$NoOpen,               # do not open the finished report in the default browser
     [switch]$SkipAuditLog,         # skip the unified audit log search (sharing, downloads, mailbox rule changes) used for indications of compromise
     [switch]$TestPermissions,      # sign in, probe every API and permission the report uses, print what is missing, and exit without collecting
-    [switch]$SkipShareScan         # skip the per-item sharing scan of SharePoint sites and OneDrive (section 19 then shows Teams, Exchange and guest access only)
+    [switch]$SkipShareScan,        # skip the per-item sharing scan of SharePoint sites and OneDrive (section 19 then shows Teams, Exchange and guest access only)
+    [switch]$SaveSignIn,           # after a successful browser sign-in, keep the refresh token encrypted (Windows DPAPI, this user, this PC) so later runs and scheduled tasks need no prompt
+    [switch]$ForgetSignIn,         # delete the saved sign-in and sign in interactively
+    [switch]$NonInteractive,       # for scheduled tasks: use the saved sign-in or stop with exit code 2; never open a browser or wait for a code
+    [string]$SignInCachePath = (Join-Path $env:LOCALAPPDATA 'AuditHat\M365AuditEvidence.signin')   # where the encrypted saved sign-in lives
 )
 
 $ErrorActionPreference = 'Stop'
@@ -216,7 +220,8 @@ Write-Host ""
 Write-Host "Audit Hat - Microsoft 365 Audit Evidence (read-only)  version $ScriptVersion  $RepoUrl" -ForegroundColor Cyan
 Write-Host "PRIVACY: this script runs only on this computer. It reads your tenant with the account you sign in with and writes" -ForegroundColor DarkCyan
 Write-Host "the report to $OutputFolder. NO DATA IS SENT TO AUDIT HAT OR ANY THIRD PARTY. The 'AuditHat Pulse Reports (PowerShell)'" -ForegroundColor DarkCyan
-Write-Host "connector you consent to only grants this local script read-only rights; it has no server side and receives nothing." -ForegroundColor DarkCyan
+Write-Host "connector you consent to only grants this local script read-only rights; it has no server side and receives nothing.
+$(if ($SaveSignIn -or (Test-Path $SignInCachePath)) { "A saved sign-in (refresh token) is kept encrypted for this Windows user at $SignInCachePath; remove it with -ForgetSignIn." })" -ForegroundColor DarkCyan
 Write-Host ""
 Write-Host "Sign in to Microsoft 365 with a Global Reader or Global Administrator account. Complete MFA if prompted." -ForegroundColor Cyan
 Write-Host "First run only: a Global Administrator must accept the read-only permission consent prompt." -ForegroundColor Cyan
@@ -264,6 +269,27 @@ function Request-ResourceToken {
     if ($r.refresh_token) { $script:GraphToken.RefreshToken = $r.refresh_token }
     return $r.access_token
 }
+function Save-SignInCache {
+    # Refresh token encrypted with Windows DPAPI for the current Windows user on this computer. Nobody else, and no other PC, can decrypt it.
+    if (-not $script:GraphToken -or -not $script:GraphToken.RefreshToken) { return }
+    try {
+        Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue
+        $payload = @{ RefreshToken = $script:GraphToken.RefreshToken; Account = $script:SignInAccount; TenantId = $script:AuthTenant; ClientId = $script:GraphClientId; Saved = (Get-Date).ToString('yyyy-MM-dd HH:mm') } | ConvertTo-Json -Compress
+        $bytes = [System.Security.Cryptography.ProtectedData]::Protect([Text.Encoding]::UTF8.GetBytes($payload), $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+        $dir = Split-Path $SignInCachePath -Parent; if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        [IO.File]::WriteAllBytes($SignInCachePath, $bytes)
+        $script:SignInCacheSaved = $true
+    } catch { Write-Warning "Could not save the sign-in: $($_.Exception.Message)" }
+}
+function Read-SignInCache {
+    if (-not (Test-Path $SignInCachePath)) { return $null }
+    try {
+        Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue
+        $bytes = [System.Security.Cryptography.ProtectedData]::Unprotect([IO.File]::ReadAllBytes($SignInCachePath), $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+        return ([Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json)
+    } catch { Write-Warning "The saved sign-in at $SignInCachePath could not be read (it belongs to another Windows user or PC, or is damaged): $($_.Exception.Message)"; return $null }
+}
+function Remove-SignInCache { if (Test-Path $SignInCachePath) { Remove-Item $SignInCachePath -Force -ErrorAction SilentlyContinue; Write-Host "Saved sign-in removed from $SignInCachePath" -ForegroundColor DarkGray } }
 function Confirm-GraphToken {
     # Refreshes the Graph token when it is within 5 minutes of expiry so long collections do not fail mid-run.
     if ($script:GraphToken -and $script:GraphToken.RefreshToken -and (Get-Date) -gt $script:GraphToken.ExpiresAt.AddMinutes(-5)) {
@@ -329,8 +355,30 @@ function Connect-GraphBrowser {
     } finally { $listener.Stop(); $listener.Close() }
 }
 
-$signedIn = $false
-if (-not $DeviceCode) { $signedIn = Connect-GraphBrowser }
+$signedIn = $false; $script:SignInFromCache = $false; $script:SignInCacheSaved = $false; $script:SignInAccount = $null
+if ($ForgetSignIn) { Remove-SignInCache }
+if (-not $DeviceCode) {
+    $cached = Read-SignInCache
+    if ($cached -and $cached.RefreshToken) {
+        if ([string]$cached.ClientId -ne [string]$script:GraphClientId) { Write-Warning 'The saved sign-in was made with a different app registration; signing in again.' }
+        else {
+            try {
+                Request-GraphToken -Body @{ grant_type = 'refresh_token'; refresh_token = [string]$cached.RefreshToken }
+                $signedIn = $true; $script:SignInFromCache = $true; $script:SignInAccount = [string]$cached.Account
+                Write-Host "Signed in silently as $($cached.Account) with the saved sign-in from $($cached.Saved) (no prompt). Run with -ForgetSignIn to remove it." -ForegroundColor Green
+            } catch {
+                $m = $_.Exception.Message; try { $b = $_.ErrorDetails.Message; if ($b) { $j = $b | ConvertFrom-Json; if ($j.error_description) { $m = ([string]$j.error_description -split "`r?`n")[0] } } } catch { Write-Verbose 'Token error body was not JSON.' }
+                Write-Warning "The saved sign-in could not be used ($m). It expires after 90 days without use, and a password change, revoked sessions or a Conditional Access sign-in frequency policy also invalidate it."
+                Remove-SignInCache
+            }
+        }
+    }
+}
+if (-not $signedIn -and $NonInteractive) {
+    Write-Error "No usable saved sign-in and -NonInteractive is set, so no browser or device-code prompt was shown. Run the script once interactively with -SaveSignIn as the same Windows user, then schedule it again."
+    exit 2
+}
+if (-not $signedIn -and -not $DeviceCode) { $signedIn = Connect-GraphBrowser }
 if (-not $signedIn) {
     Write-Host ""
     Write-Host "DEVICE CODE SIGN-IN" -ForegroundColor Yellow
@@ -356,9 +404,14 @@ if ($script:GraphToken) {
 }
 if (-not $mg -or -not $ctx.Account) { throw "Sign-in to Microsoft Graph did not complete. Stopping." }
 Write-Host "Connected to tenant $($ctx.TenantId) as $($ctx.Account)" -ForegroundColor Green
+if (-not $script:SignInAccount) { $script:SignInAccount = [string]$ctx.Account }
+if ($SaveSignIn -or $script:SignInFromCache) {
+    if ($script:GraphToken -and $script:GraphToken.RefreshToken) { Save-SignInCache; if ($SaveSignIn -and -not $script:SignInFromCache) { Write-Host "Sign-in saved for $($ctx.Account), encrypted for the Windows user $env:USERNAME on this PC at $SignInCachePath. Later runs (and a scheduled task running as this Windows user) will not prompt." -ForegroundColor Green } }
+    elseif ($SaveSignIn) { Write-Warning 'The sign-in cannot be saved after a device-code sign-in (no refresh token is available to the script). Use the browser sign-in.' }
+}
 $missingScopes = @($Scopes | Where-Object { $ctx.Scopes -notcontains $_ })
 if ($missingScopes.Count) {
-    Write-Warning "The following Graph permissions were not granted; related sections will show as not available: $($missingScopes -join ', ')"
+    Write-Warning "The following Graph permissions were not granted; related sections will show as not available: $($missingScopes -join ', ')$(if ($script:SignInFromCache) { '. The saved sign-in predates these permissions: run once with -ForgetSignIn -SaveSignIn to consent and save again.' })"
     Write-Warning "A Global Administrator must run the script once and accept the consent prompt to grant them."
 }
 
@@ -4217,7 +4270,8 @@ if ($ticketRows.Count) {
         Export-Csv -Path $ticketCsvPath -NoTypeInformation -Encoding UTF8
     Write-Host "Remediation tickets (CSV): $ticketCsvPath" -ForegroundColor Green
 }
-if (-not $NoOpen) { try { Start-Process -FilePath $reportPath -ErrorAction Stop } catch { Write-Verbose "Could not open the report automatically: $($_.Exception.Message)" } }
+if (($SaveSignIn -or $script:SignInFromCache) -and $script:GraphToken -and $script:GraphToken.RefreshToken) { Save-SignInCache }   # the token rotates during the run; keep the newest
+if (-not $NoOpen -and -not $NonInteractive) { try { Start-Process -FilePath $reportPath -ErrorAction Stop } catch { Write-Verbose "Could not open the report automatically: $($_.Exception.Message)" } }
 
 # ----------------------------------------------------------------------------------------------
 # Optional Word documents (requires Microsoft Word installed on this machine)
