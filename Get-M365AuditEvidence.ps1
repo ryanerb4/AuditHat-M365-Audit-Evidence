@@ -3057,6 +3057,8 @@ body.paged main>section{display:none}body.paged main>section.active{display:bloc
 .pager{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid var(--line);display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:8px 0 10px;margin:-14px 0 18px}
 .pager button{font:inherit;font-size:9.5pt;border:1px solid var(--blue);background:#fff;color:var(--blue);border-radius:4px;padding:4px 12px;cursor:pointer}.pager button:disabled{opacity:.45;cursor:default}.pager button.primary{background:var(--blue);color:#fff}
 .pager .pos{font-size:9.5pt;color:#555;margin-left:auto}.pager .title{font-size:10.5pt;color:var(--blue);font-weight:bold}
+body.paged main>section.active>h2{position:sticky;top:var(--pager-h,46px);z-index:4;background:#fff;margin-top:0;padding:10px 0 8px;box-shadow:0 6px 8px -8px rgba(0,0,0,.35)}
+body.paged .pager .title{display:none}
 section{margin-bottom:48px;scroll-margin-top:12px}
 h2{font-size:20pt;color:var(--blue);border-bottom:2px solid var(--blue);padding-bottom:4px;margin:0 0 14px}
 h3{font-size:13pt;color:var(--blue);margin:26px 0 8px}h3.platform{margin-top:34px;padding:6px 10px;background:#eef3f8;border-left:4px solid var(--blue)}
@@ -4012,6 +4014,8 @@ $shareSectionHtml
   if(nextBtn) nextBtn.addEventListener('click', function(){ var i=sections.findIndex(function(s){ return s.classList.contains('active'); }); if(i<sections.length-1){ try{ history.replaceState(null,'','#'+sections[i+1].id); }catch(err){} showSection(sections[i+1]); } });
   window.addEventListener('beforeprint', function(){ document.body.classList.remove('paged'); });
   window.addEventListener('afterprint', function(){ document.body.classList.toggle('paged', paged); });
+  function setPagerHeight(){ var pg=document.querySelector('.pager'); if(pg) document.documentElement.style.setProperty('--pager-h', (pg.offsetHeight+1)+'px'); }
+  setPagerHeight(); window.addEventListener('resize', setPagerHeight);
   applyMode();
   // one info panel open at a time; click anywhere else closes it
   document.addEventListener('click', function(e){

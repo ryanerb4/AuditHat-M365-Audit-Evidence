@@ -72,7 +72,8 @@ Entra Connect sync status and links to the companion from the overview and the f
 ## Navigating the report
 
 The report opens as a set of pages: the left navigation shows one section at a time, with Previous
-and Next buttons and a "Section n of 19" marker at the top. Every link inside the report (a finding
+and Next buttons and a "Section n of 19" marker in a toolbar that stays at the top; the section heading
+stays pinned under it while you scroll. Every link inside the report (a finding
 in the roadmap, "Progress since last report", a situation-table detail) opens the right page and
 scrolls to the item. **Show all sections** switches to the whole report on one long page for
 scrolling or searching with Ctrl+F, and the choice is remembered in the browser. Printing always
