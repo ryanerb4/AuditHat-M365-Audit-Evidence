@@ -709,7 +709,7 @@ function New-HtmlTable {
         $first = $rows[0]
         if ($first -is [System.Collections.IDictionary]) { $Columns = @($first.Keys) } else { $Columns = @($first.PSObject.Properties.Name) }
     }
-    $Columns = @($Columns | Where-Object { $_ -notin @('_tags', '_issues', '_links') })
+    $Columns = @($Columns | Where-Object { $_ -notin @('_tags', '_issues', '_links', '_html') })
     $sb = New-Object System.Text.StringBuilder
     if ($Id -and $Filters) {
         [void]$sb.Append("<div class='filters' data-table='$Id'><button class='on' data-tag='all'>All ($($rows.Count))</button>")
@@ -726,17 +726,19 @@ function New-HtmlTable {
         $tags = if ($r -is [System.Collections.IDictionary]) { $r['_tags'] } else { $r.PSObject.Properties['_tags'].Value }
         $rowIssues = if ($r -is [System.Collections.IDictionary]) { $r['_issues'] } else { $r.PSObject.Properties['_issues'].Value }
         $rowLinks = if ($r -is [System.Collections.IDictionary]) { $r['_links'] } else { $r.PSObject.Properties['_links'].Value }
+        $rowHtml = if ($r -is [System.Collections.IDictionary]) { $r['_html'] } else { $r.PSObject.Properties['_html'].Value }
         [void]$sb.Append($(if ($tags) { "<tr data-tags='$(HtmlEnc $tags)'>" } else { '<tr>' }))
         foreach ($c in $Columns) {
             $v = if ($r -is [System.Collections.IDictionary]) { $r[$c] } else { $r.$c }
             if ($v -is [System.Collections.IEnumerable] -and $v -isnot [string]) { $v = Join-List $v '; ' }
             $cell = HtmlEnc $v
             if ($rowLinks -and $rowLinks[$c]) { $cell = "<a href='$(HtmlEnc $rowLinks[$c])'>$cell</a>" }
+            if ($rowHtml -and $rowHtml.Contains($c)) { $cell = [string]$rowHtml[$c] }   # pre-built, already encoded HTML
             $cls = ''
             switch -Regex ([string]$v) {
-                '^(True|Enabled|enabled|Compliant|Required|Yes|Block|block|On|Improved|Resolved|Clear)$' { $cls = " class='good'" }
-                '^(False|Disabled|disabled|No|Not registered|Off|enabledForReportingButNotEnforced|Regressed|New|Urgent)$' { $cls = " class='warn'" }
-                '^(Review|Partial|Changed|In progress.*)$' { $cls = " class='mid'" }
+                '^(True|Enabled|enabled|Compliant|Required|Yes|Block|block|On|Improved|Resolved|Clear|Low)$' { $cls = " class='good'" }
+                '^(False|Disabled|disabled|No|Not registered|Off|enabledForReportingButNotEnforced|Regressed|New|Urgent|High|Critical)$' { $cls = " class='warn'" }
+                '^(Review|Partial|Changed|Medium|In progress.*)$' { $cls = " class='mid'" }
             }
             [void]$sb.Append("<td$cls>$cell$(Get-RowIssueIcon $rowIssues $c)</td>")
         }
@@ -2013,11 +2015,20 @@ $iocAuditAvailable = -not (Get-GraphFailure 'role assignment audit events')
 
 # App registrations with secrets or certificates added in the window
 $appRegs = Get-GraphAllSafe 'v1.0/applications?$select=id,appId,displayName,createdDateTime,passwordCredentials,keyCredentials&$top=999' 'application registrations'
+# who added each credential: the audit log names the actor on "Update application - Certificates and secrets management" / "Add service principal credentials"
+$CredActorByApp = @{}
+foreach ($ev in $iocAppRows) {
+    if ($ev['Activity'] -match 'Certificates and secrets|service principal credentials') {
+        $appName = ([string]$ev['Target'] -split ' / ')[0]
+        if ($appName) { if (-not $CredActorByApp.ContainsKey($appName)) { $CredActorByApp[$appName] = @() }; $CredActorByApp[$appName] += "$($ev['Performed by']) on $($ev['Date (local)'])" }
+    }
+}
 $iocNewCredRows = @()
 foreach ($a in $appRegs) {
     foreach ($c in @($a.passwordCredentials) + @($a.keyCredentials)) {
         if ($c -and $c.startDateTime -and ([datetime]$c.startDateTime) -ge $iocSinceDate) {
-            $iocNewCredRows += [ordered]@{ 'Application' = $a.displayName; 'Credential' = $(if ($c.secretText -or $c.hint -or $c.PSObject.Properties['hint']) { 'Client secret' } elseif ($c.type) { "Certificate ($($c.type))" } else { 'Credential' }); 'Name' = $c.displayName; 'Valid from' = (Format-DateText $c.startDateTime); 'Expires' = (Format-DateText $c.endDateTime); '_issues' = @{ 'Credential' = 'ioc-app-cred' } }
+            $addedBy = if ($CredActorByApp.ContainsKey([string]$a.displayName)) { Join-List (@($CredActorByApp[[string]$a.displayName]) | Select-Object -Unique -First 3) '; ' } else { 'Not in audit log window' }
+            $iocNewCredRows += [ordered]@{ 'Application' = $a.displayName; 'Credential' = $(if ($c.secretText -or $c.hint -or $c.PSObject.Properties['hint']) { 'Client secret' } elseif ($c.type) { "Certificate ($($c.type))" } else { 'Credential' }); 'Name' = $c.displayName; 'Added by' = $addedBy; 'Valid from' = (Format-DateText $c.startDateTime); 'Expires' = (Format-DateText $c.endDateTime); '_issues' = @{ 'Credential' = 'ioc-app-cred' } }
         }
     }
 }
@@ -2025,7 +2036,7 @@ foreach ($a in $appRegs) {
 $AppRowByName = @{}; foreach ($r in $appRows) { if ($r -and $r['Application']) { $AppRowByName[[string]$r['Application']] = $r } }
 $iocNewAppRows = @($servicePrincipals | Where-Object { $_.createdDateTime -and ([datetime]$_.createdDateTime) -ge $iocSinceDate } | Sort-Object createdDateTime -Descending | ForEach-Object {
     $ar = $AppRowByName[[string]$_.displayName]
-    [ordered]@{ 'Application' = $_.displayName; 'Publisher' = $(if ($ar) { $ar['Publisher'] } elseif ($_.publisherName) { $_.publisherName } else { 'Unknown' }); 'Added' = (Format-DateText $_.createdDateTime); 'Delegated permissions' = $(if ($ar) { Join-List (@($ar['Admin-consented delegated permissions'], $ar['User-consented delegated permissions']) | Where-Object { $_ -and $_ -ne 'None' }) '; ' } else { '' }); 'Application permissions' = $(if ($ar) { $ar['Application permissions'] } else { '' }); '_issues' = @{ 'Application' = 'ioc-new-app' } }
+    [ordered]@{ 'Application' = $_.displayName; 'Publisher' = $(if ($ar) { $ar['Publisher'] } elseif ($_.publisherName) { $_.publisherName } else { 'Unknown' }); 'Added' = (Format-DateText $_.createdDateTime); 'Added / consented by' = $(if ($ConsentBySp.ContainsKey($_.id)) { Join-List (@($ConsentBySp[$_.id]) | Select-Object -First 3) ' | ' } elseif ($ar) { $ar['Approved by / when'] } else { 'Not in audit log window' }); 'Delegated permissions' = $(if ($ar) { Join-List (@($ar['Admin-consented delegated permissions'], $ar['User-consented delegated permissions']) | Where-Object { $_ -and $_ -ne 'None' }) '; ' } else { '' }); 'Application permissions' = $(if ($ar) { $ar['Application permissions'] } else { '' }); '_issues' = @{ 'Application' = 'ioc-new-app' } }
 })
 # Accounts created in the window (from the user list already collected)
 $iocNewUserRows = @($users | Where-Object { $_.createdDateTime -and ([datetime]$_.createdDateTime) -ge $iocSinceDate } | Sort-Object createdDateTime -Descending | ForEach-Object {
@@ -2901,8 +2912,10 @@ details.info .tip p{margin:6px 0 0}
 .modal-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--line)}.modal-head b{font-size:11pt;color:var(--blue)}
 .modal-head button,.modal-actions button{font:inherit;font-size:9.5pt;border:1px solid var(--blue);background:var(--blue);color:#fff;border-radius:4px;padding:4px 12px;cursor:pointer}.modal-head button{background:#fff;color:var(--blue)}
 .modal pre{margin:0;padding:12px 14px;overflow:auto;white-space:pre-wrap;word-break:break-word;font:10pt Consolas,monospace;flex:1 1 auto;background:#fafafa}.modal-actions{display:flex;gap:12px;align-items:center;padding:10px 14px;border-top:1px solid var(--line)}.modal-actions .hint{font-size:9pt;color:#555}body.noscroll{overflow:hidden}
+.perms{margin:0;padding-left:16px;font-size:9.5pt}.perms li{margin:1px 0}button.more{font:inherit;font-size:9pt;border:1px solid var(--blue);background:#fff;color:var(--blue);border-radius:4px;padding:1px 8px;cursor:pointer;margin-top:4px}
+.modal-body{padding:10px 14px;overflow:auto;font-size:10pt;flex:1 1 auto}.modal-body h5{margin:10px 0 4px;color:var(--blue);font-size:10pt}.modal-body ul{margin:0;padding-left:18px}.modal-body li{margin:2px 0}
 .privacy{background:#eef6ee;border:1px solid #bfe0c2;border-left:5px solid var(--good);padding:10px 14px;border-radius:4px;font-size:10pt;margin:16px 0}
-@media print{nav,.pager{display:none}body.paged main>section{display:block}.ticketbar,button.tk,.modal{display:none}main{margin:0;padding:0}section{page-break-before:always}section:first-of-type{page-break-before:avoid}table.grid thead th{position:static}.filters{display:none}details.info .tip{position:static;display:block;width:auto;box-shadow:none;margin-top:4px}details.info summary{display:none}details.info:not([open]) .tip{display:none}}
+@media print{nav,.pager{display:none}body.paged main>section{display:block}.ticketbar,button.tk,button.more,.modal{display:none}.permfull{display:block!important}main{margin:0;padding:0}section{page-break-before:always}section:first-of-type{page-break-before:avoid}table.grid thead th{position:static}.filters{display:none}details.info .tip{position:static;display:block;width:auto;box-shadow:none;margin-top:4px}details.info summary{display:none}details.info:not([open]) .tip{display:none}}
 "@
 
 $sections = @(
@@ -2971,14 +2984,48 @@ foreach ($r in $allDeviceRows) {
     if ($is.Count) { $r['_issues'] = $is }
 }
 $HighPrivPerm = 'ReadWrite\.All|Directory\.ReadWrite|RoleManagement\.ReadWrite|AppRoleAssignment\.ReadWrite|Mail\.(Read|ReadWrite|Send)|Files\.ReadWrite\.All|Sites\.FullControl|full_access_as_app|Exchange\.ManageAsApp|User\.ReadWrite\.All|Group\.ReadWrite\.All|Application\.ReadWrite'
+$permIdx = 0
 foreach ($r in $appRows) {
-    $is = @{}
-    if ($r['Publisher'] -match 'unverified|Unknown') { $is['Publisher'] = 'app-unverified' }
-    if ($r['User-consented delegated permissions'] -ne 'None') { $is['User-consented delegated permissions'] = 'app-user-consent' }
-    if ($r['Application permissions'] -match $HighPrivPerm) { $is['Application permissions'] = 'app-high-privilege' }
-    elseif ($r['Admin-consented delegated permissions'] -match $HighPrivPerm) { $is['Admin-consented delegated permissions'] = 'app-high-privilege' }
+    $permIdx++
+    $is = @{}; $tags = @()
+    $isMicrosoft = ([string]$r['Publisher']) -eq 'Microsoft'
+    $unverified = ([string]$r['Publisher']) -match 'unverified|Unknown'
+    $appPermText = [string]$r['Application permissions']; $adminPermText = [string]$r['Admin-consented delegated permissions']; $userPermText = ([string]$r['User-consented delegated permissions']) -replace '^\d+ grant\(s\): ', ''
+    $isRogue = ($r['App ID'] -and $RogueApps.ContainsKey([string]$r['App ID'])) -or (([string]$r['Application']) -match $RogueAppNamePattern)
+    $allPermText = "$appPermText $adminPermText $userPermText"
+    $risk = if ($isRogue) { 'High' }
+            elseif ($appPermText -ne 'None' -and $appPermText -match $HighPrivPerm) { 'High' }
+            elseif ($unverified -and $allPermText -match $RiskyPermPattern) { 'High' }
+            elseif ($userPermText -ne 'None' -or ($adminPermText -ne 'None' -and $adminPermText -match $HighPrivPerm)) { 'Medium' }
+            elseif ($unverified -and -not $isMicrosoft) { 'Medium' }
+            else { 'Low' }
+    if ($isRogue) { $is['Risk'] = 'ioc-rogue-app' }
+    elseif ($risk -eq 'High') { $is['Risk'] = $(if ($unverified -and $appPermText -eq 'None') { 'ioc-unverified-app' } else { 'app-high-privilege' }) }
+    elseif ($userPermText -ne 'None') { $is['Risk'] = 'app-user-consent' }
+    elseif ($unverified) { $is['Risk'] = 'app-unverified' }
+    $tags += $risk.ToLower(); if ($userPermText -ne 'None') { $tags += 'userconsent' }; if ($unverified) { $tags += 'unverified' }; $tags += $(if ($isMicrosoft) { 'microsoft' } else { 'thirdparty' })
+    # one column describing the application
+    $appHtml = "<b>$(HtmlEnc $r['Application'])</b><br><span class='muted'>$(HtmlEnc $r['Publisher']) &middot; $(HtmlEnc $r['Type']) &middot; $(if ($r['Enabled for sign-in'] -eq $true) { 'enabled for sign-in' } else { 'sign-in disabled' }) &middot; $(if ($r['Assignment required'] -eq $true) { 'assignment required' } else { 'open to all users' }) &middot; $($r['Users/groups assigned']) user(s)/group(s) assigned</span>"
+    # one column for every permission, first four inline, the rest in a dialog
+    $groups = @()
+    if ($appPermText -ne 'None') { $groups += @{ Label = 'Application permissions (run without a signed-in user)'; Items = @($appPermText -split ';\s*' | Where-Object { $_ }) } }
+    if ($adminPermText -ne 'None') { $groups += @{ Label = 'Delegated permissions, admin-consented (act as any signed-in user)'; Items = @($adminPermText -split ';\s*' | Where-Object { $_ }) } }
+    if ($userPermText -ne 'None') { $groups += @{ Label = 'Delegated permissions, user-consented (act as the users who approved it)'; Items = @($userPermText -split ';\s*' | Where-Object { $_ }) } }
+    $flat = @(); foreach ($g in $groups) { foreach ($it in $g.Items) { $flat += @{ Group = $g.Label; Item = $it } } }
+    if ($flat.Count -eq 0) { $permHtml = "<span class='muted'>None</span>" }
+    else {
+        $permHtml = "<ul class='perms'>" + ((@($flat | Select-Object -First 4) | ForEach-Object { "<li>$(HtmlEnc $_.Item)$(if ($_.Group -like 'Application*') { " <span class='muted'>(application)</span>" } elseif ($_.Group -like '*user-consented*') { " <span class='muted'>(user consent)</span>" })</li>" }) -join '') + '</ul>'
+        $full = "<p class='muted'>$(HtmlEnc $r['Publisher']) &middot; approved: $(HtmlEnc $r['Approved by / when'])</p>" + (($groups | ForEach-Object { "<h5>$(HtmlEnc $_.Label) ($(@($_.Items).Count))</h5><ul>" + ((@($_.Items) | ForEach-Object { "<li>$(HtmlEnc $_)</li>" }) -join '') + '</ul>' }) -join '')
+        $permHtml += "<button type='button' class='more' data-target='perm-$permIdx' data-title='$(HtmlEnc $r['Application']): $($flat.Count) permission(s)'>$(if ($flat.Count -gt 4) { "Show all $($flat.Count)" } else { 'Details' })</button><div id='perm-$permIdx' class='permfull' hidden>$full</div>"
+    }
+    $r['Risk'] = $risk
+    $r['Permissions'] = "$($flat.Count) permission(s)"
+    $r['_html'] = @{ 'Application' = $appHtml; 'Permissions' = $permHtml }
+    $r['_tags'] = ($tags -join ' ')
     if ($is.Count) { $r['_issues'] = $is }
 }
+$AppFilters = @(@{ Label = 'High risk'; Tag = 'high' }, @{ Label = 'Medium risk'; Tag = 'medium' }, @{ Label = 'User-consented'; Tag = 'userconsent' }, @{ Label = 'Unverified publisher'; Tag = 'unverified' }, @{ Label = 'Third-party'; Tag = 'thirdparty' }, @{ Label = 'Microsoft'; Tag = 'microsoft' })
+$appRowsSorted = @($appRows | Sort-Object @{ Expression = { @{ 'High' = 0; 'Medium' = 1; 'Low' = 2 }[[string]$_['Risk']] } }, @{ Expression = { [string]$_['Application'] } })
 foreach ($r in $caSummaryRows) { if ($r['State'] -ne 'On') { $r['_issues'] = @{ 'State' = 'ca-not-enabled' } } }
 foreach ($r in $authMethodRows) { if ($r['State'] -eq 'enabled' -and $r['Method'] -in @('Sms', 'Voice', 'Email')) { $r['_issues'] = @{ 'State' = 'auth-weak-method' } } }
 foreach ($r in $profileRows) { if (-not $r['Included'] -or $r['Included'] -eq 'None') { $r['_issues'] = @{ 'Included' = 'policy-unassigned' } } }
@@ -3412,9 +3459,9 @@ $(New-HtmlTable $iocCaRows -Columns 'Date (local)','Activity','Performed by','Ta
 <h3>Application credentials, owners and new app registrations</h3>
 $(New-HtmlTable $iocAppRows -Columns 'Date (local)','Activity','Performed by','Target','Detail','Result' -EmptyText "No application credential or ownership changes in the audit log for the last $AuditDays days.")
 <h4>Secrets and certificates added to app registrations</h4>
-$(New-HtmlTable $iocNewCredRows -Columns 'Application','Credential','Name','Valid from','Expires' -EmptyText "No app registration received a new secret or certificate in the last $AuditDays days.")
+$(New-HtmlTable $iocNewCredRows -Columns 'Application','Credential','Name','Added by','Valid from','Expires' -EmptyText "No app registration received a new secret or certificate in the last $AuditDays days.")
 <h4>Enterprise applications added</h4>
-$(New-HtmlTable $iocNewAppRows -Columns 'Application','Publisher','Added','Delegated permissions','Application permissions' -EmptyText "No enterprise applications were added in the last $AuditDays days.")
+$(New-HtmlTable $iocNewAppRows -Columns 'Application','Publisher','Added','Added / consented by','Delegated permissions','Application permissions' -EmptyText "No enterprise applications were added in the last $AuditDays days.")
 <h3 id='ioc-accounts'>Accounts created, enabled, deleted or invited</h3>
 $(New-HtmlTable $iocNewUserRows -Id 'tbl-ioc-users' -Filters @(@{ Label = 'Guests'; Tag = 'guest' }, @{ Label = 'Members'; Tag = 'member' }) -Columns 'User','UPN','Type','Enabled','Created','Licensed','Admin' -EmptyText "No accounts were created in the last $AuditDays days.")
 $(if ($iocUserRows.Count) { '<h4>Account lifecycle audit events</h4>' + (New-HtmlTable $iocUserRows -Columns 'Date (local)','Activity','Performed by','Target','Result') })
@@ -3587,7 +3634,8 @@ $(New-KvTable $devRegKv -Issues $devRegIssues)
 $(New-KvTable $appGovKv -Issues $appGovIssues)
 <p class='note'>Approver and approval date come from the Entra directory audit log, which retains $AuditDays days in this export (30 days with Entra ID P1/P2, 7 days on Free). Applications consented before that window show the date they were added to the tenant and "Not in audit log retention" for the approver.</p>
 <h3>Applications and consented permissions</h3>
-$(New-HtmlTable $appRows -EmptyText 'No enterprise applications returned.')
+<p class='meta'>Risk: High = application permissions that read or write mail, files or the directory without a user, a known-abused app, or an unverified publisher with mail or file access; Medium = user-consented permissions, admin-consented high-privilege delegated permissions, or an unverified publisher; Low = everything else. The first four permissions are listed; Show all opens the complete list grouped by type.</p>
+$(New-HtmlTable $appRowsSorted -Id 'tbl-apps' -Filters $AppFilters -Columns 'Application','Risk','Permissions','Approved by / when','Added to tenant' -EmptyText 'No enterprise applications returned.')
 </section>
 
 <section id='consent'><h2>12. Application Consent Audit Events (last $AuditDays days)</h2>
@@ -3647,6 +3695,7 @@ $(if ($mdeCollected) { (New-KvTable $mdeKv) + (New-HtmlTable $mdeRows -Id 'tbl-m
 </section>
 $teamsSectionHtml
 $spoSectionHtml
+<div id='moreModal' class='modal' hidden><div class='modal-box' role='dialog' aria-modal='true' aria-labelledby='moreTitle'><div class='modal-head'><b id='moreTitle'></b><button type='button' id='moreClose'>Close</button></div><div class='modal-body' id='moreBody'></div></div></div>
 <footer class='brand'>$(if ($logoImg) { "<a href='https://audithat.com' target='_blank' rel='noopener'>$logoImg</a>" })<div>Microsoft 365 Audit Evidence for $(HtmlEnc $ClientLabel), generated $($ReportDate.ToString('MMMM d, yyyy HH:mm')) by $(HtmlEnc $ctx.Account).<br>Produced locally by the free, read-only Audit Hat M365 Audit Evidence script, version $ScriptVersion (<a href='$RepoUrl' target='_blank' rel='noopener'>source and updates on GitHub</a>). Provided by $brandLink. No data left your organization.<br>Running on-premises Active Directory as well? The companion <a href='$AdRepoUrl' target='_blank' rel='noopener'>AuditHat AD Governance Report</a> covers it the same way.</div></footer>
 <script>
 (function(){
@@ -3710,6 +3759,13 @@ $spoSectionHtml
     });
   }
   window.addEventListener('beforeprint', function(){ document.querySelectorAll('details.steps').forEach(function(d){ d.setAttribute('open',''); }); });
+  // "Show all" dialogs for long cells (permissions): the full content sits hidden next to the button
+  var moreModal=document.getElementById('moreModal'), moreBody=document.getElementById('moreBody'), moreTitle=document.getElementById('moreTitle'), moreClose=document.getElementById('moreClose');
+  function closeMore(){ if(!moreModal||moreModal.hasAttribute('hidden')) return; moreModal.setAttribute('hidden',''); document.body.classList.remove('noscroll'); }
+  document.querySelectorAll('button.more').forEach(function(b){ b.addEventListener('click',function(){ var src=document.getElementById(b.getAttribute('data-target')); if(!src||!moreModal) return; moreTitle.textContent=b.getAttribute('data-title')||''; moreBody.innerHTML=src.innerHTML; moreModal.removeAttribute('hidden'); document.body.classList.add('noscroll'); moreClose.focus(); }); });
+  if(moreClose) moreClose.addEventListener('click',closeMore);
+  if(moreModal) moreModal.addEventListener('click',function(e){ if(e.target===moreModal) closeMore(); });
+  document.addEventListener('keydown',function(e){ if(e.key==='Escape') closeMore(); });
   // Paged view: the navigation shows one section at a time; "Show all sections" restores the single long page.
   var mainEl=document.querySelector('main');
   var sections=Array.prototype.slice.call(document.querySelectorAll('main > section'));

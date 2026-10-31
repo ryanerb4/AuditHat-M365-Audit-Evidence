@@ -31,6 +31,10 @@ First public release.
   anti-phishing, Safe Links, Safe Attachments, Defender for Endpoint devices and scores.
 - Directory synchronization status (Entra Connect, on-premises AD domains, sync server) and a link to
   the companion AuditHat AD Governance Report.
+- Enterprise Applications table redesigned: one application column (name, publisher, type, sign-in,
+  assignment, assigned users), a Risk level column, all permissions in one column with the first four
+  inline and a Show all dialog grouped by permission type, app IDs removed, risk and consent filters.
+  Credential additions show who added them; new enterprise apps show who added or consented.
 - `-TestPermissions`: probes every endpoint, token, report, module and licence the report uses and
   prints what is missing.
 - Entra ID Free fallback: when the P1 registration report is refused, MFA registration, MFA product and
