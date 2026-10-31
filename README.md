@@ -238,6 +238,13 @@ delegated permissions listed above. Takes about five minutes as a Global Adminis
    ```
 
    The settings file contains no secrets (public client), so it is safe to keep next to the script.
+   It can also carry **priority overrides** that move findings between roadmap phases for your
+   institution (Critical = this week, High = 30 days, Medium = 90 days, Low = 12 months). Keys are
+   regular expressions matched against the finding title:
+
+   ```json
+   { "PriorityOverrides": { "^Temporary Access Pass": "Low", "Safe Links": "Critical" } }
+   ```
 
 For single sign-on to Exchange Online, also add **APIs my organization uses > Office 365 Exchange
 Online > Delegated > Exchange.Manage** (and, for Teams policies, **Skype and Teams Tenant Admin API
@@ -507,6 +514,14 @@ Microsoft 365 Foundations Benchmark sections and CIS Controls v8 safeguards, and
 (IT Examination Handbook, the 2021 Authentication Guidance, CAT / NCUA ACET domain codes). Every ticket
 and CSV row carries the same references so recommendations can cite the standard. It is a mapping to
 help auditors and examiners, not a certification.
+
+**What is treated as "this week" by default, and can we change it?**
+Critical, and therefore this week: no MFA enforcement, Global Administrators without MFA, a single
+Global Administrator, user consent to applications allowed, no Intune compliance policies (overall or
+for mobile devices), anyone-link sharing, open Teams guest and external access, anonymous meeting
+join and lobby bypass, device join open to all users, urgent indications of compromise, and the
+Secure Score actions with those titles. Change any of it per institution with `PriorityOverrides` in
+the settings file; no script edit needed.
 
 **Is the remediation plan actionable or just a list of settings?**
 Each finding carries the exact steps (which admin center, which page, which value), who should do it,

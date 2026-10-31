@@ -31,6 +31,11 @@ First public release.
   anti-phishing, Safe Links, Safe Attachments, Defender for Endpoint devices and scores.
 - Directory synchronization status (Entra Connect, on-premises AD domains, sync server) and a link to
   the companion AuditHat AD Governance Report.
+- This-week (Critical) defaults for financial institutions: Teams guest and external access, device join
+  open to all users, single Global Administrator, mobile device compliance (new control "Intune
+  compliance policies for mobile devices"), and Secure Score actions for anonymous meeting join, lobby
+  admission, more than one global admin and user consent. `PriorityOverrides` in the settings file
+  re-tiers any finding by title.
 - "Review These Now: Possible Indications of Compromise" is section 3, ahead of the Remediation Plan
   (now section 4).
 - View ticket: each finding opens a preview of the full ticket text with a Copy button, instead of
