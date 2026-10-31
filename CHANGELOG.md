@@ -31,6 +31,29 @@ First public release.
   anti-phishing, Safe Links, Safe Attachments, Defender for Endpoint devices and scores.
 - Directory synchronization status (Entra Connect, on-premises AD domains, sync server) and a link to
   the companion AuditHat AD Governance Report.
+- Section 4 "Possible Indications of Compromise": directory audit log (role assignments, MFA method
+  changes, password resets, policy changes, domain/federation changes, app credentials and owners,
+  account lifecycle), app registration secrets and certificates added, new enterprise apps and accounts,
+  Entra ID Protection risky users and detections (P2), sign-in log analysis (P1: countries per user,
+  legacy sign-ins, MFA denials, Conditional Access blocks, password sprays, lockouts, risky sign-ins),
+  and Exchange: inbox rules that hide, delete or forward mail, Full Access delegates, Send As grants,
+  transport rule changes, mailbox auditing. Rolled up as urgent / to review with a KPI tile, summary
+  row, Critical/High findings and history tracking.
+- Section 16 "Microsoft Teams": guest and external access posture, every team with owners, members,
+  guests, archived state and 90-day activity; optional tenant policies through the MicrosoftTeams
+  module (federation, guest access, anonymous meeting join).
+- Section 17 "SharePoint and OneDrive": tenant sharing settings, users sharing externally, every site
+  and every OneDrive with the owner's account state, from the Microsoft 365 usage reports.
+- Single sign-in: the browser sign-in's refresh token is exchanged for Exchange Online (and Teams)
+  tokens; a separate Exchange prompt only appears when the connector lacks the Exchange.Manage
+  permission, with the consent link printed.
+- The report opens in the default browser when the run finishes (`-NoOpen` to suppress); the ticket
+  CSV is linked from the Remediation Plan.
+- Remediation links name the admin center they open (Defender, Entra, Intune, Exchange, Teams,
+  SharePoint, Microsoft 365) and every control-based finding links to the page where it is changed.
+- New Graph scopes: IdentityRiskyUser.Read.All, IdentityRiskEvent.Read.All, Reports.Read.All,
+  SharePointTenantSettings.Read.All, TeamSettings.Read.All (all read-only; one-time admin consent).
+- Sections renumbered: MDM Compliance Policies is now 5 and Defender and Email Protection 15.
 - Remediation Plan as tickets: stable `AH-xxxxxx` reference per finding, Copy ticket and Copy all
   buttons (ready-to-paste text for the IT provider or MSP), priority filters and search, CSV download
   in the report and the same CSV written next to the report.

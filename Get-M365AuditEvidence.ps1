@@ -7,15 +7,16 @@
 
 .DESCRIPTION
   Sections produced:
-    1. Tenant overview
-    2. Intune compliance policies (settings, actions for noncompliance, assignments) grouped by platform
-    3. Intune device configuration profiles (list and assignments)
-    4. Conditional Access policies (full conditions, grant and session controls)
-    5. Enterprise applications (publisher, consent type, delegated and application permissions,
-       date added, who added or consented when available in the audit log)
-    6. Application consent and add events from the directory audit log
-    7. Users (status, type, licenses, last sign-in, MFA registration)
-    8. Privileged role members
+    1. Executive Summary (narrative, KPI tiles, top priorities, progress since last report, tenant details)
+    2. Security Controls Summary (one computed status per control)
+    3. Remediation Plan (every gap ranked Critical to Low, stable AH- references, Copy ticket, CSV)
+    4. Possible Indications of Compromise (what to research today: audit log, sign-ins, mailbox rules)
+    5. MDM Compliance Policies        6. Intune Policies           7. Managed Devices
+    8. Conditional Access             9. Authentication Methods   10. Enterprise Applications
+   11. Application Consent Audit Events                           12. Users
+   13. Privileged Users              14. Exchange Online          15. Defender and Email Protection
+   16. Microsoft Teams               17. SharePoint and OneDrive
+  README.md documents every section; docs/DEVELOPMENT.md explains the code layout for contributors.
 
   Notes on "who approved and when":
     Graph does not store an approver on a permission grant. The only record of who consented
@@ -108,7 +109,8 @@ param(
     [switch]$SkipExchange,         # skip the Exchange Online checks (auto-forwarding, POP/IMAP/SMTP AUTH)
     [switch]$SkipInboxRules,       # skip per-mailbox inbox rule scan (slow on large tenants)
     [switch]$DeviceCode,           # sign in with a device code instead of the browser (for remote sessions or if the browser flow fails)
-    [switch]$NoHistory             # do not read or write the per-tenant history file used for the progress charts and change log
+    [switch]$NoHistory,            # do not read or write the per-tenant history file used for the progress charts and change log
+    [switch]$NoOpen                # do not open the finished report in the default browser
 )
 
 $ErrorActionPreference = 'Stop'
@@ -157,7 +159,12 @@ $Scopes = @(
     'Device.Read.All',
     'DeviceManagementApps.Read.All',
     'Policy.Read.AuthenticationMethod',
-    'SecurityEvents.Read.All'          # Microsoft Secure Score (read-only)
+    'SecurityEvents.Read.All',         # Microsoft Secure Score (read-only)
+    'IdentityRiskyUser.Read.All',      # Entra ID Protection risky users (needs Entra ID P2; indications of compromise)
+    'IdentityRiskEvent.Read.All',      # Entra ID Protection risk detections (needs Entra ID P2)
+    'Reports.Read.All',                # Teams, SharePoint and OneDrive usage reports (site and team inventories)
+    'SharePointTenantSettings.Read.All', # SharePoint and OneDrive tenant sharing settings
+    'TeamSettings.Read.All'            # per-team settings (archived, guest settings)
 )
 
 # --- Prerequisite check and auto-install (current user scope, no admin rights required) -------
@@ -353,7 +360,7 @@ $OutputFolder = (Resolve-Path $OutputFolder).Path
 # Helpers
 # ----------------------------------------------------------------------------------------------
 function Get-GraphAll {
-    param([Parameter(Mandatory)][string]$Uri, [switch]$NoPaging)
+    param([Parameter(Mandatory)][string]$Uri, [switch]$NoPaging, [int]$MaxItems = 0)
     $items = New-Object System.Collections.Generic.List[object]
     $next = $Uri
     while ($next) {
@@ -364,7 +371,7 @@ function Get-GraphAll {
         } else {
             $items.Add($r)
         }
-        $next = if ($NoPaging) { $null } else { $r.'@odata.nextLink' }
+        $next = if ($NoPaging -or ($MaxItems -gt 0 -and $items.Count -ge $MaxItems)) { $null } else { $r.'@odata.nextLink' }
     }
     return $items
 }
@@ -386,20 +393,48 @@ function Get-GraphErrorText {
     return "$status$msg$(if ($code) { " [$code]" })$hint"
 }
 function Get-GraphAllSafe {
-    param([string]$Uri, [string]$What, [switch]$NoPaging)
-    try { return (Get-GraphAll -Uri $Uri -NoPaging:$NoPaging) }
+    param([string]$Uri, [string]$What, [switch]$NoPaging, [int]$MaxItems = 0)
+    try { return (Get-GraphAll -Uri $Uri -NoPaging:$NoPaging -MaxItems $MaxItems) }
     catch {
         $reason = Get-GraphErrorText $_
         # Graph returns a bare 400/403 for unlicensed features; explain from the tenant's own subscriptions when we can.
         if ($Uri -match 'deviceManagement|deviceAppManagement' -and $script:HasIntune -eq $false) { $reason += ' Intune is not licensed in this tenant (no Intune service plan in the subscribed SKUs).' }
         elseif ($Uri -match 'userRegistrationDetails|signInActivity' -and $script:HasEntraP1 -eq $false) { $reason += ' Requires Entra ID P1 or P2, which is not licensed in this tenant.' }
         elseif ($Uri -match 'roleEligibilitySchedule|roleAssignmentSchedule' -and $script:HasEntraP2 -eq $false) { $reason += ' Privileged Identity Management requires Entra ID P2, which is not licensed in this tenant.' }
+        elseif ($Uri -match 'auditLogs/signIns' -and $script:HasEntraP1 -eq $false) { $reason += ' The sign-in log requires Entra ID P1 or P2, which is not licensed in this tenant.' }
+        elseif ($Uri -match 'identityProtection' -and $script:HasEntraP2 -eq $false) { $reason += ' Entra ID Protection requires Entra ID P2, which is not licensed in this tenant.' }
+        elseif ($Uri -match 'admin/sharepoint/settings' -and $_.Exception.Message -match 'Forbidden') { $reason += ' SharePointTenantSettings.Read.All has not been consented, or the account is not a SharePoint or Global administrator / Global Reader.' }
+        elseif ($Uri -match '/reports/' -and $_.Exception.Message -match 'Forbidden') { $reason += ' Reports.Read.All has not been consented, or the account lacks the Reports Reader / Global Reader role.' }
         $script:GraphFailures[$What] = $reason
         Write-Warning "Could not retrieve $What : $reason"
         return @()
     }
 }
 function Get-GraphFailure { param([string]$What) if ($script:GraphFailures.ContainsKey($What)) { return $script:GraphFailures[$What] } ; return $null }
+function Get-GraphReportCsv {
+    # Microsoft 365 usage reports (Teams, SharePoint, OneDrive) come back as CSV behind a redirect; download and parse.
+    param([string]$Report, [string]$What)
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("m365audit-" + [guid]::NewGuid().ToString('N') + ".csv")
+    try {
+        Confirm-GraphToken
+        Invoke-MgGraphRequest -Method GET -Uri "v1.0/reports/$Report" -OutputFilePath $tmp -ErrorAction Stop
+        $rows = @(Import-Csv -Path $tmp -ErrorAction Stop)
+        return $rows
+    } catch {
+        $reason = Get-GraphErrorText $_
+        if ($_.Exception.Message -match 'Forbidden') { $reason += ' Reports.Read.All has not been consented, or the account lacks the Reports Reader / Global Reader role.' }
+        $script:GraphFailures[$What] = $reason
+        Write-Warning "Could not retrieve $What : $reason"
+        return @()
+    } finally { if (Test-Path $tmp) { Remove-Item $tmp -Force -ErrorAction SilentlyContinue } }
+}
+function Test-ConcealedReportNames {
+    # Microsoft 365 usage reports hide user, group and site names (hashes instead) when the tenant's report privacy setting is on.
+    param($Rows, [string]$Column)
+    $v = @($Rows | Select-Object -First 5 | ForEach-Object { [string]$_.$Column } | Where-Object { $_ })
+    if (-not $v.Count) { return $false }
+    return (@($v | Where-Object { $_ -match '^[0-9A-Fa-f]{20,}$' }).Count -eq $v.Count)
+}
 
 function HtmlEnc { param($s) if ($null -eq $s) { return '' } ; return [System.Net.WebUtility]::HtmlEncode([string]$s) }
 
@@ -524,6 +559,52 @@ $IssueCatalog = @{
     'mde-high-risk'        = @{ Title = 'Device has a high risk score in Defender';        Why = 'Defender has active alerts on this device indicating malware or attacker activity that has not been resolved.'; Fix = 'Investigate the alerts in the Defender portal, isolate the device if needed, and resolve the incidents.' }
     'mde-inactive'         = @{ Title = 'Defender sensor is inactive';                      Why = 'The device has not reported to Defender for Endpoint recently, so it is unprotected by EDR and may be offline, re-imaged or tampered with.'; Fix = 'Confirm the device status; re-onboard or retire it in Defender.' }
     'mde-not-onboarded'    = @{ Title = 'Managed device is not onboarded to Defender for Endpoint'; Why = 'The device is licensed for EDR but not sending telemetry, so threats on it are invisible.'; Fix = 'Deploy the Defender for Endpoint onboarding profile through Intune to all managed devices.' }
+    # ---- Possible indications of compromise (section 4)
+    'ioc-urgent'           = @{ Title = 'Urgent indicator: investigate today';                 Why = 'This pattern is one attackers create almost every time they get into a Microsoft 365 account or tenant. It can be legitimate, but it must be confirmed with the people involved before it is dismissed.'; Fix = 'Treat it as a security incident until proven otherwise: confirm with the user or administrator named, reset the password and revoke sessions for the affected account, remove the rule, credential or setting if it is not expected, and record the outcome. Involve your IT provider or incident response contact immediately if you cannot explain it.' }
+    'ioc-review'           = @{ Title = 'Review indicator: confirm it was expected';           Why = 'Legitimate administration and attacker activity look the same in the audit log. A quick check with the person who made the change, or the user affected, turns an unknown into evidence.'; Fix = 'Compare each entry with change tickets, help-desk records or the administrator who made it. Anything nobody can account for should be escalated as a possible incident.' }
+    'ioc-role-add'         = @{ Title = 'Privileged role assigned recently';                   Why = 'Adding an account to Global Administrator or another privileged role is a standard persistence step after a compromise and also the single most consequential change a legitimate administrator can make.'; Fix = 'Confirm every assignment against a change record. Remove any that are not justified, and use Privileged Identity Management (Entra ID P2) so elevated roles are time-limited and approved.' }
+    'ioc-mfa-change'       = @{ Title = 'MFA methods registered or changed';                   Why = 'Attackers who obtain a password register their own Authenticator app or phone number so they keep access after the user changes the password.'; Fix = 'Ask each user whether they registered the method themselves. Remove unknown methods from the user''s authentication methods, reset the password, revoke sessions and review the user''s sign-in history.' }
+    'ioc-pw-reset'         = @{ Title = 'Password reset by an administrator';                  Why = 'Help-desk password resets are normal, but a reset nobody requested is how attackers with admin access take over other accounts, and social-engineered resets are a common entry point.'; Fix = 'Match each reset to a help-desk ticket. Require identity verification before resets, and alert on resets of privileged accounts.' }
+    'ioc-ca-change'        = @{ Title = 'Conditional Access or security policy changed';       Why = 'Weakening or excluding accounts from Conditional Access is how attackers switch off MFA for themselves. Policy changes should be rare and planned.'; Fix = 'Confirm each change with the administrator named and the change record. Restore any policy that was weakened and review exclusions.' }
+    'ioc-domain-change'    = @{ Title = 'Domain or federation settings changed';               Why = 'Changing a domain to federated authentication lets an attacker sign in as any user without a password or MFA. This is a hallmark of tenant-level compromise and is almost never a routine change.'; Fix = 'Verify immediately with whoever manages identity. If unexpected, revert the domain to managed authentication, rotate Global Administrator credentials and engage incident response.' }
+    'ioc-app-cred'         = @{ Title = 'Credential added to an application';                  Why = 'Adding a secret or certificate to an existing app registration gives the holder the app''s permissions, often mailbox or directory-wide, without any user sign-in or MFA. It is a favoured persistence technique.'; Fix = 'Confirm who added each credential and why. Remove unknown credentials, review the app''s permissions, and restrict who can manage applications.' }
+    'ioc-new-app'          = @{ Title = 'New application added to the tenant';                 Why = 'Malicious OAuth apps, consented by a tricked user or an attacker, read mail and files through the API without touching the user''s password.'; Fix = 'Check each new app''s publisher and permissions in the Enterprise Applications section. Remove apps nobody recognises and restrict user consent to verified publishers or admin approval.' }
+    'ioc-new-user'         = @{ Title = 'User accounts created recently';                      Why = 'Attackers create their own accounts, often with innocuous names, to keep access after the original victim is cleaned up.'; Fix = 'Match each new account to an HR or onboarding record. Disable any that cannot be matched.' }
+    'ioc-guest'            = @{ Title = 'Guests invited recently';                             Why = 'A guest invitation gives an outside identity access to Teams, SharePoint and files. Invitations attackers send to themselves survive password resets.'; Fix = 'Confirm who invited each guest and why. Remove guests nobody can justify and restrict who may invite guests.' }
+    'ioc-inbox-rule-hide'  = @{ Title = 'Inbox rule that deletes, hides or forwards mail';     Why = 'After taking over a mailbox, attackers create rules that delete or move incoming mail (often to RSS Feeds or Archive) or forward it out, so the victim does not see replies, security alerts or the fraudulent payment instructions being exchanged in their name. This is the most common indicator of business email compromise.'; Fix = 'Contact the mailbox owner. If the rule is unexpected, disable it, reset the password, revoke sessions, review sent items and forwarding, and search for mail the rule touched.' }
+    'ioc-delegate'         = @{ Title = 'Full Access delegate on a mailbox';                   Why = 'Full Access lets another account read every message in the mailbox. Assistants and shared mailboxes legitimately use it; an unexpected delegate is a persistence technique.'; Fix = 'Review each delegate with the mailbox owner and remove any that are not required. Audit delegate changes.' }
+    'ioc-sendas'           = @{ Title = 'Send As permission granted to another account';       Why = 'Send As lets one account send mail that appears to come from another, the exact capability needed for payment fraud in an executive''s name.'; Fix = 'Confirm each grant is required for a shared mailbox or assistant arrangement, and remove the rest.' }
+    'ioc-transport-change' = @{ Title = 'Mail flow (transport) rule changed recently';          Why = 'Tenant-wide transport rules can silently copy, redirect or allow-list mail for every user. Attackers with admin access use them to exfiltrate mail or whitelist phishing.'; Fix = 'Confirm each change with the Exchange administrator and the change record. Review redirect, Bcc and bypass-filtering actions.' }
+    'ioc-audit-off'        = @{ Title = 'Mailbox auditing is disabled';                        Why = 'Without mailbox audit logging there is no record of who read, moved or sent mail, so a compromise cannot be investigated or proven.'; Fix = 'Enable organization-wide mailbox auditing (Set-OrganizationConfig -AuditDisabled $false). It is on by default in Exchange Online.' }
+    'ioc-risky-user'       = @{ Title = 'Entra ID Protection flags this user as at risk';      Why = 'Microsoft has correlated signals (leaked credentials, anomalous travel, malware-linked IP addresses) that indicate the account is probably compromised.'; Fix = 'Investigate the user''s recent sign-ins, reset the password, revoke sessions and review mailbox rules and MFA methods. Enable a user-risk Conditional Access policy so this happens automatically.' }
+    'ioc-risk-detection'   = @{ Title = 'Risk detections recorded';                            Why = 'Each detection is a sign-in or user event Microsoft considers anomalous (unfamiliar location, impossible travel, anonymous IP, password spray).'; Fix = 'Review the detections for the users involved and confirm or dismiss each one in Entra ID Protection.' }
+    'ioc-multi-country'    = @{ Title = 'User signed in from more than one country';           Why = 'Sign-ins from several countries in a short window usually mean travel, a VPN, or someone else using the credentials. For a community bank with no overseas staff it deserves a direct question.'; Fix = 'Confirm travel or VPN use with the user. If unexplained, reset the password, revoke sessions and review mailbox rules. Consider a Conditional Access policy that blocks sign-ins from countries where you have no staff.' }
+    'ioc-legacy-signin'    = @{ Title = 'Successful legacy authentication sign-ins';            Why = 'Legacy protocols (IMAP, POP, SMTP AUTH, ActiveSync basic) bypass MFA. A successful legacy sign-in is a password being used without a second factor, possibly by an attacker.'; Fix = 'Identify the users and clients involved, migrate them to modern authentication, then block legacy authentication with Conditional Access.' }
+    'ioc-mfa-denied'       = @{ Title = 'MFA prompts denied or failed';                        Why = 'A user denying MFA prompts they did not initiate means someone has their password. Repeated prompts are the "MFA fatigue" attack that preceded several major breaches.'; Fix = 'Ask the user whether they initiated the sign-ins. If not, reset the password immediately. Enable number matching and additional context in Authenticator.' }
+    'ioc-ca-blocked'       = @{ Title = 'Sign-ins blocked by Conditional Access';               Why = 'Conditional Access only evaluates after the password was accepted. A block from an unexpected location or device means the credentials are known to someone outside your controls.'; Fix = 'Review the users and locations involved and reset passwords where the attempt was not the user.' }
+    'ioc-spray'            = @{ Title = 'Possible password spray from one address';            Why = 'Many failed passwords against many different accounts from one IP address is the signature of a password spray. Any account using a weak or reused password will fall to it.'; Fix = 'Confirm MFA and legacy-authentication blocking cover every account, enable Smart Lockout and password protection, and review which accounts the address targeted.' }
+    'ioc-lockout'          = @{ Title = 'Account lockouts';                                    Why = 'Lockouts show repeated wrong passwords against specific accounts, either a user with a stale saved password or an attacker guessing.'; Fix = 'Check the sign-in log for the accounts involved; if the attempts come from unknown addresses, treat them as attack traffic and confirm MFA on the targeted accounts.' }
+    # ---- Teams (section 16)
+    'teams-guests'         = @{ Title = 'Team contains guests';                               Why = 'Guests see every channel, file and conversation in the team. Guests who are no longer working with the institution are a common data-leak path.'; Fix = 'Have each team owner confirm every guest is still needed. Run access reviews (Entra ID P2) or review guests quarterly, and remove stale ones.' }
+    'teams-public'         = @{ Title = 'Public team';                                        Why = 'Anyone in the organization can join a public team and read everything in it, including files. Customer, HR or board material in a public team is exposed to every employee and guest with directory access.'; Fix = 'Set teams that hold confidential material to Private and review membership.' }
+    'teams-no-owner'       = @{ Title = 'Team has no owner';                                  Why = 'Without an owner nobody reviews membership, guests or sharing, and nobody can be asked whether the content is still needed.'; Fix = 'Assign at least two owners to every team; the Teams admin center lists ownerless teams.' }
+    'teams-single-owner'   = @{ Title = 'Team has a single owner';                            Why = 'If the one owner leaves, the team becomes ownerless and its data and guests are unmanaged.'; Fix = 'Add a second owner.' }
+    'teams-inactive'       = @{ Title = 'Inactive team';                                      Why = 'Teams nobody uses still hold data and guests. Stale content accumulates risk without any benefit.'; Fix = 'Archive or delete inactive teams after confirming with the owner; apply a Microsoft 365 group expiration policy.' }
+    'groups-guests-open'   = @{ Title = 'Any member may add guests to Teams and Microsoft 365 Groups'; Why = 'With the default setting every team owner can invite any outside email address into the institution''s Teams and SharePoint content with no approval.'; Fix = 'Restrict guest invitations to administrators or to approved domains (Entra external collaboration settings and the Group.Unified AllowToAddGuests setting), or require an approval workflow.' }
+    'teams-federation-open' = @{ Title = 'Teams external access allows all external domains'; Why = 'Open federation lets anyone with a Teams or Skype account chat and call your staff, which is now a major phishing and malware delivery channel ("Teams phishing").'; Fix = 'Restrict external access to an allow list of partner domains and block Teams consumer (personal) accounts.' }
+    'teams-anon-join'      = @{ Title = 'Anonymous users can join meetings';                  Why = 'Anonymous join lets unauthenticated participants enter meetings with customers or the board by link alone.'; Fix = 'Set the global meeting policy so anonymous users wait in the lobby or cannot join, and restrict who bypasses the lobby.' }
+    'teams-policies-na'    = @{ Title = 'Teams tenant policies not collected';                 Why = 'External access, guest access and meeting policies are tenant-wide controls that decide who outside the institution can reach staff through Teams.'; Fix = 'Install the MicrosoftTeams PowerShell module (Install-Module MicrosoftTeams -Scope CurrentUser) and grant the connector the Skype and Teams Tenant Admin API permission so the next report includes them.' }
+    # ---- SharePoint and OneDrive (section 17)
+    'spo-anyone-links'     = @{ Title = 'Anyone links are allowed';                           Why = '"Anyone" links open a file or folder to any person on the internet who has the link, with no sign-in and no record of who opened it. For a financial institution this is the highest-risk sharing setting.'; Fix = 'Set external sharing to "New and existing guests" or stricter in the SharePoint admin center, for both SharePoint and OneDrive, and expire existing anyone links.' }
+    'spo-external-sharing' = @{ Title = 'External sharing is enabled';                        Why = 'Staff can share documents with any outside email address. That is often necessary, but it needs domain restrictions, expiry and monitoring.'; Fix = 'Limit sharing to allowed partner domains, set default link type to "People you choose", require guests to sign in with the invited account, and review externally shared files monthly.' }
+    'spo-resharing'        = @{ Title = 'Guests can re-share content';                        Why = 'A guest who received a file can pass it on to anyone else, so the institution loses control after the first share.'; Fix = 'Turn off "Allow guests to share items they don''t own" in the SharePoint admin center.' }
+    'spo-legacy-auth'      = @{ Title = 'Legacy authentication is allowed for SharePoint';    Why = 'Legacy (basic) authentication to SharePoint bypasses MFA and Conditional Access.'; Fix = 'Disable legacy authentication protocols in SharePoint admin center > Policies > Access control > Apps that don''t use modern authentication.' }
+    'spo-idle-timeout-off' = @{ Title = 'Idle session sign-out is off';                       Why = 'On shared or unmanaged computers a browser left signed in to SharePoint or OneDrive stays open indefinitely.'; Fix = 'Enable idle session sign-out (for example warn at 55 minutes, sign out at 60) in SharePoint admin center > Policies > Access control.' }
+    'spo-unmanaged-sync'   = @{ Title = 'OneDrive sync is allowed from unmanaged devices';    Why = 'Any PC, including a home computer, can sync the institution''s files locally where they are outside Intune, Defender and backup.'; Fix = 'Restrict the sync client to domain-joined or compliant devices and block sync of sensitive file types.' }
+    'spo-site-inactive'    = @{ Title = 'Inactive site';                                      Why = 'Sites with no activity for months still hold documents, permissions and sharing links that nobody reviews.'; Fix = 'Confirm with the owner and archive or delete; apply retention and site lifecycle policies.' }
+    'spo-site-no-owner'    = @{ Title = 'Site has no owner';                                  Why = 'Without an owner nobody is accountable for who can read the site''s documents or whether they are still needed.'; Fix = 'Assign an owner in the SharePoint admin center or delete the site.' }
+    'od-owner-disabled'    = @{ Title = 'OneDrive belongs to a disabled or missing account';  Why = 'The files of departed staff remain accessible to whoever has been granted access, often indefinitely, and may include customer data.'; Fix = 'Transfer needed files to the manager and let the OneDrive retention period delete the rest; set the retention to the shortest period policy allows.' }
+    'spo-external-shares'  = @{ Title = 'User shared files externally';                       Why = 'Each externally shared file is institutional data outside the tenant. Volume by user shows where review is needed.'; Fix = 'Review what was shared (Purview or the SharePoint sharing reports), confirm business need, and remove sharing that is no longer required.' }
     'guest'                = @{ Title = 'Guest account';                                     Why = 'Guests are external people with access to shared content; stale or unreviewed guests are a common data-leak path.'; Fix = 'Review guests periodically, remove those no longer needed, and consider access reviews or restricting guest invitations.' }
 }
 function New-InfoIcon {
@@ -1365,6 +1446,7 @@ $exoKv = [ordered]@{}
 $fwdMailboxRows = @(); $fwdRuleRows = @(); $fwdTransportRows = @(); $remoteDomainRows = @(); $casRows = @()
 $dkimConfigs = @(); $spamRows = @(); $malwareRows = @(); $phishRows = @(); $safeLinksRows = @(); $safeAttachRows = @(); $presetRows = @(); $atpGlobal = $null; $connFilter = $null; $defenderCollected = $false
 $exoCollected = $false
+$suspiciousRuleRows = @(); $fullAccessRows = @(); $sendAsRows = @(); $recentTransportRows = @(); $mailboxAuditDisabled = $null; $exoSingleSignOn = $false
 if (-not $SkipExchange) {
     if (Get-Module -ListAvailable ExchangeOnlineManagement) {
         try {
@@ -1373,6 +1455,17 @@ if (-not $SkipExchange) {
             $exoParams = @{ ShowBanner = $false }
             if ($TenantId) { $exoParams.Organization = $TenantId }
             if ($ctx.Account) { $exoParams.UserPrincipalName = $ctx.Account }   # reuse the same account signed in to Graph
+            # Single sign-on: reuse the browser sign-in's refresh token for an Exchange Online token so there is no second prompt.
+            $exoToken = $null
+            if ($script:GraphToken -and $script:GraphToken.RefreshToken) {
+                try { $exoToken = Request-ResourceToken 'https://outlook.office365.com/.default' }
+                catch {
+                    $m = $_.Exception.Message
+                    try { $b = $_.ErrorDetails.Message; if ($b) { $j = $b | ConvertFrom-Json; if ($j.error_description) { $m = ([string]$j.error_description -split "`r?`n")[0] } } } catch { Write-Verbose 'Token error body was not JSON.' }
+                    Write-Warning "Exchange Online single sign-on is not available ($m). A second sign-in prompt will appear. To avoid it next time, a Global Administrator grants the connector the 'Office 365 Exchange Online > Exchange.Manage' delegated permission (admin consent: https://login.microsoftonline.com/$($ctx.TenantId)/adminconsent?client_id=$($script:GraphClientId))."
+                }
+            }
+            if ($exoToken) { $exoParams.AccessToken = $exoToken; $exoParams.Remove('Organization'); $exoSingleSignOn = $true }
             Connect-ExchangeOnline @exoParams
             $exoCollected = $true
 
@@ -1401,13 +1494,35 @@ if (-not $SkipExchange) {
                     $i++
                     Write-Progress -Activity 'Scanning inbox rules for forwarding' -Status $mb.PrimarySmtpAddress -PercentComplete ([int](100 * $i / [Math]::Max(1, @($mailboxes).Count)))
                     try {
-                        $rules = Get-InboxRule -Mailbox $mb.Identity -ErrorAction Stop | Where-Object { $_.ForwardTo -or $_.ForwardAsAttachmentTo -or $_.RedirectTo }
-                        foreach ($r in $rules) {
+                        $allRules = @(Get-InboxRule -Mailbox $mb.Identity -ErrorAction Stop)
+                        foreach ($r in ($allRules | Where-Object { $_.ForwardTo -or $_.ForwardAsAttachmentTo -or $_.RedirectTo })) {
                             $targets = @(@($r.ForwardTo) + @($r.ForwardAsAttachmentTo) + @($r.RedirectTo) | Where-Object { $_ })
                             $ext = @($targets | Where-Object { Test-ExternalAddress ([string]$_) }).Count -gt 0
                             $fwdRuleRows += [ordered]@{ 'Mailbox' = $mb.PrimarySmtpAddress; 'Rule' = $r.Name; 'Enabled' = $r.Enabled; 'Forwards to' = (Join-List ($targets | ForEach-Object { [string]$_ }) '; '); 'External' = $(if ($ext) { 'Yes' } else { 'No' }) }
                         }
-                    } catch { Write-Warning "Inbox rules not readable for $($mb.PrimarySmtpAddress): $($_.Exception.Message)" }
+                        # Indications of compromise: rules that hide, delete or exfiltrate mail (classic business email compromise tradecraft)
+                        foreach ($r in $allRules) {
+                            $why = @()
+                            if ($r.DeleteMessage) { $why += 'deletes mail' }
+                            if ($r.SoftDeleteMessage) { $why += 'soft-deletes mail' }
+                            if ($r.MoveToFolder -and ([string]$r.MoveToFolder) -match '(?i)RSS|Archive|Deleted Items|Junk|Conversation History|Notes') { $why += "moves mail to '$(([string]$r.MoveToFolder) -replace '^.*\\', '')'" }
+                            if ($r.MarkAsRead -and ($r.ForwardTo -or $r.RedirectTo -or $r.ForwardAsAttachmentTo -or $r.MoveToFolder -or $r.DeleteMessage)) { $why += 'marks as read' }
+                            if (([string]$r.Name).Trim() -match '^[\W_]{0,3}$') { $why += 'blank or punctuation-only name' }
+                            if (@(@($r.ForwardTo) + @($r.ForwardAsAttachmentTo) + @($r.RedirectTo) | Where-Object { $_ -and (Test-ExternalAddress ([string]$_)) }).Count) { $why += 'forwards outside the organization' }
+                            if ($why.Count) {
+                                $conds = @()
+                                if ($r.From) { $conds += "from: $(Join-List ($r.From | ForEach-Object { [string]$_ }))" }
+                                if ($r.SubjectContainsWords) { $conds += "subject contains: $(Join-List $r.SubjectContainsWords)" }
+                                if ($r.SubjectOrBodyContainsWords) { $conds += "subject or body contains: $(Join-List $r.SubjectOrBodyContainsWords)" }
+                                if ($r.BodyContainsWords) { $conds += "body contains: $(Join-List $r.BodyContainsWords)" }
+                                $suspiciousRuleRows += [ordered]@{ 'Mailbox' = $mb.PrimarySmtpAddress; 'Rule' = $r.Name; 'Enabled' = $r.Enabled; 'Why it is suspicious' = (Join-List $why '; '); 'Conditions' = $(if ($conds.Count) { Join-List $conds '; ' } else { 'All messages' }); '_issues' = @{ 'Why it is suspicious' = 'ioc-inbox-rule-hide' }; '_tags' = $(if ($r.Enabled) { 'enabled' } else { 'disabled' }) }
+                            }
+                        }
+                        # Indications of compromise: Full Access delegates that are not the owner or the system
+                        foreach ($perm in @(Get-MailboxPermission -Identity $mb.Identity -ErrorAction Stop | Where-Object { -not $_.IsInherited -and $_.Deny -ne $true -and ([string]$_.User) -notmatch '^(NT AUTHORITY|S-1-5)' -and ((@($_.AccessRights) | ForEach-Object { [string]$_ }) -join ',') -match 'FullAccess' })) {
+                            $fullAccessRows += [ordered]@{ 'Mailbox' = $mb.PrimarySmtpAddress; 'Mailbox type' = [string]$mb.RecipientTypeDetails; 'Delegate (Full Access)' = [string]$perm.User; 'Rights' = (Join-List (@($perm.AccessRights) | ForEach-Object { [string]$_ })); '_issues' = @{ 'Delegate (Full Access)' = 'ioc-delegate' }; '_tags' = $(if ([string]$mb.RecipientTypeDetails -eq 'SharedMailbox') { 'shared' } else { 'user' }) }
+                        }
+                    } catch { Write-Warning "Inbox rules or permissions not readable for $($mb.PrimarySmtpAddress): $($_.Exception.Message)" }
                 }
                 Write-Progress -Activity 'Scanning inbox rules for forwarding' -Completed
             }
@@ -1459,12 +1574,18 @@ if (-not $SkipExchange) {
             foreach ($rule in (Invoke-ExoSafe { Get-ATPProtectionPolicyRule } 'Defender preset policy rules')) { $presetRows += [ordered]@{ 'Preset' = $rule.Name; 'Scope' = 'Defender for Office 365 (Safe Links, Safe Attachments)'; 'State' = $rule.State; 'Priority' = $rule.Priority; 'Applies to' = (Join-List (@($rule.SentTo) + @($rule.SentToMemberOf) + @($rule.RecipientDomainIs) | Where-Object { $_ }) '; ') } }
             $defenderCollected = $true
 
+            # ---- Indications of compromise from Exchange: Send As grants, recently changed transport rules, mailbox auditing
+            $sendAsRows = @(Invoke-ExoSafe { Get-RecipientPermission -ResultSize Unlimited } 'Send As permissions' | Where-Object { $_ -and ([string]$_.Trustee) -notmatch '^(NT AUTHORITY|S-1-5)' -and ((@($_.AccessRights) | ForEach-Object { [string]$_ }) -join ',') -match 'SendAs' -and ([string]$_.AccessControlType) -ne 'Deny' } | ForEach-Object { [ordered]@{ 'Mailbox' = [string]$_.Identity; 'Trustee (can send as)' = [string]$_.Trustee; '_issues' = @{ 'Trustee (can send as)' = 'ioc-sendas' } } })
+            $recentTransportRows = @($transportRules | Where-Object { $_.WhenChanged -and ([datetime]$_.WhenChanged) -ge (Get-Date).AddDays(-$AuditDays) } | ForEach-Object { [ordered]@{ 'Rule' = $_.Name; 'State' = [string]$_.State; 'Changed' = (Format-DateText $_.WhenChanged); 'Created' = (Format-DateText $_.WhenCreated); 'Actions' = (Join-List (@($_.Actions) | ForEach-Object { [string]$_ }) '; '); '_issues' = @{ 'Changed' = 'ioc-transport-change' } } })
+            $mailboxAuditDisabled = [bool]$orgConfig.AuditDisabled
+
             $exoKv = [ordered]@{
                 'Default remote domain (*) allows auto-forward'   = $(if ($defaultRd) { $defaultRd.AutoForwardEnabled } else { 'Not found' })
                 'Outbound spam policy automatic forwarding'       = $spamText
                 'Mailboxes forwarding to an external address'     = @($fwdMailboxRows | Where-Object { $_.External -eq 'Yes' }).Count
                 'Inbox rules forwarding to an external address'   = $(if ($SkipInboxRules) { 'Not scanned' } else { @($fwdRuleRows | Where-Object { $_.External -eq 'Yes' }).Count })
                 'Transport rules that redirect, copy, or bcc mail' = @($fwdTransportRows).Count
+                'Connected to Exchange Online with'               = $(if ($exoSingleSignOn) { 'Single sign-on token from the browser sign-in (no second prompt)' } else { 'A separate Exchange Online sign-in prompt' })
                 'Modern authentication (OAuth2) enabled'          = $orgConfig.OAuth2ClientProfileEnabled
                 'SMTP AUTH disabled tenant-wide'                  = $transportConfig.SmtpClientAuthenticationDisabled
                 'Mailboxes with POP enabled'                      = @($casMailboxes | Where-Object { $_.PopEnabled }).Count
@@ -1563,6 +1684,378 @@ elseif ($script:GraphToken -and $script:GraphToken.RefreshToken) {
 } else { $mdeNote = 'Not collected: device-code sign-in was used (no refresh token for the Defender API).' }
 $MdeFilters = @(@{ Label = 'High risk'; Tag = 'highrisk' }, @{ Label = 'High exposure'; Tag = 'highexposure' }, @{ Label = 'Inactive sensor'; Tag = 'inactive' }, @{ Label = 'Stale'; Tag = 'stale' })
 
+$UserByUpn = @{}; foreach ($u in $users) { if ($u.userPrincipalName) { $UserByUpn[([string]$u.userPrincipalName).ToLower()] = $u } }
+# ----------------------------------------------------------------------------------------------
+# Possible indications of compromise (section 4): what an attacker typically leaves behind, from the
+# directory audit log, the sign-in log, Entra ID Protection, app registrations and Exchange (collected above).
+# Nothing here is a confirmed incident; each item is something to confirm with the people involved.
+# ----------------------------------------------------------------------------------------------
+Write-Host "Collecting indications of compromise (last $AuditDays days)..." -ForegroundColor Cyan
+$iocSinceDate = (Get-Date).AddDays(-$AuditDays)
+function ConvertTo-IocAuditRow {
+    param($e, [string]$Issue)
+    $actor = if ($e.initiatedBy.user) { $(if ($e.initiatedBy.user.displayName) { "$($e.initiatedBy.user.displayName) ($($e.initiatedBy.user.userPrincipalName))" } else { [string]$e.initiatedBy.user.userPrincipalName }) } elseif ($e.initiatedBy.app) { "App: $($e.initiatedBy.app.displayName)" } else { 'Unknown' }
+    $targets = @($e.targetResources | Where-Object { $_ })
+    $tUser = $targets | Where-Object { $_.type -eq 'User' } | Select-Object -First 1
+    $tOther = $targets | Where-Object { $_.type -ne 'User' } | Select-Object -First 1
+    $target = Join-List (@($tUser.userPrincipalName, $tUser.displayName, $tOther.displayName) | Where-Object { $_ } | Select-Object -First 2) ' / '
+    $detail = @()
+    foreach ($t in $targets) {
+        foreach ($mp in @($t.modifiedProperties | Where-Object { $_ })) {
+            if ($mp.displayName -match '^(Role\.DisplayName|Role\.TemplateId|Domain|LiveType|FederationBrandName|PasswordPolicies|StrongAuthenticationMethod|StrongAuthenticationUserDetails|KeyDescription|KeyType|KeyUsage|Included Updated Properties|AppAddress|TargetId\.UserType|Group\.DisplayName|ConditionalAccessPolicy|PolicyName|AuthenticationMethod|IsAdminConsent|AccountEnabled|UserPrincipalName)$') {
+                $nv = ([string]$mp.newValue) -replace '^"|"$', ''
+                if ($nv -and $nv -ne '[]') { $detail += "$($mp.displayName -replace '^Role\.', ''): $nv" }
+            }
+        }
+    }
+    $self = $tUser -and $e.initiatedBy.user -and $tUser.userPrincipalName -and ([string]$tUser.userPrincipalName -eq [string]$e.initiatedBy.user.userPrincipalName)
+    [ordered]@{ 'Date (local)' = (Format-DateText $e.activityDateTime); 'Activity' = $e.activityDisplayName; 'Performed by' = $actor; 'Target' = $target; 'Detail' = (Join-List ($detail | Select-Object -First 4) '; '); 'Result' = $e.result; '_issues' = @{ 'Activity' = $Issue }; '_tags' = $(if ($self) { 'self' } else { 'other' }) }
+}
+function Get-IocAudit {
+    param([string]$Filter, [string]$What, [string]$Issue, [scriptblock]$Keep)
+    $ev = Get-GraphAllSafe "v1.0/auditLogs/directoryAudits?`$filter=$([uri]::EscapeDataString("activityDateTime ge $since and ($Filter)"))&`$top=999" $What -MaxItems 2000
+    if ($Keep) { $ev = @($ev | Where-Object $Keep) }
+    return @($ev | Sort-Object activityDateTime -Descending | ForEach-Object { ConvertTo-IocAuditRow $_ $Issue })
+}
+$iocRoleRows   = Get-IocAudit "category eq 'RoleManagement'" 'role assignment audit events' 'ioc-role-add' { $_.activityDisplayName -match '^Add (member|eligible member|scoped member) to role' -and $_.result -eq 'success' }
+$iocMfaRows    = Get-IocAudit "loggedByService eq 'Authentication Methods'" 'security info audit events' 'ioc-mfa-change' { $_.activityDisplayName -match 'registered|deleted|changed default|Admin (registered|deleted|updated)' -and $_.result -eq 'success' }
+$iocPwRows     = Get-IocAudit "activityDisplayName eq 'Reset user password' or activityDisplayName eq 'Reset password (by admin)' or activityDisplayName eq 'Change user password' or activityDisplayName eq 'Set force change user password' or activityDisplayName eq 'Reset password (self-service)'" 'password audit events' 'ioc-pw-reset' { $_.result -eq 'success' }
+$iocPwAdminRows = @($iocPwRows | Where-Object { $_['_tags'] -eq 'other' })
+$iocCaRows     = Get-IocAudit "activityDisplayName eq 'Add conditional access policy' or activityDisplayName eq 'Update conditional access policy' or activityDisplayName eq 'Delete conditional access policy' or activityDisplayName eq 'Add named location' or activityDisplayName eq 'Update named location' or activityDisplayName eq 'Delete named location' or activityDisplayName eq 'Update policy' or activityDisplayName eq 'Update authorization policy' or activityDisplayName eq 'Update authentication methods policy'" 'policy change audit events' 'ioc-ca-change' { $_.result -eq 'success' }
+$iocDomainRows = Get-IocAudit "activityDisplayName eq 'Set federation settings on domain' or activityDisplayName eq 'Set domain authentication' or activityDisplayName eq 'Add unverified domain' or activityDisplayName eq 'Verify domain' or activityDisplayName eq 'Delete domain' or activityDisplayName eq 'Update domain' or activityDisplayName eq 'Add domain to company' or activityDisplayName eq 'Remove domain from company'" 'domain audit events' 'ioc-domain-change' { $_.result -eq 'success' }
+$iocAppRows    = Get-IocAudit "activityDisplayName eq 'Add service principal credentials' or activityDisplayName eq 'Remove service principal credentials' or activityDisplayName eq 'Add owner to application' or activityDisplayName eq 'Add owner to service principal' or activityDisplayName eq 'Add application' or activityDisplayName eq 'Update application – Certificates and secrets management' or activityDisplayName eq 'Update application - Certificates and secrets management' or activityDisplayName eq 'Add app role assignment grant to user'" 'application change audit events' 'ioc-app-cred' { $_.result -eq 'success' }
+$iocUserRows   = Get-IocAudit "activityDisplayName eq 'Add user' or activityDisplayName eq 'Invite external user' or activityDisplayName eq 'Enable account' or activityDisplayName eq 'Delete user' or activityDisplayName eq 'Restore user' or activityDisplayName eq 'Hard Delete user'" 'account lifecycle audit events' 'ioc-new-user' { $_.result -eq 'success' }
+foreach ($r in $iocUserRows) { if ($r['Activity'] -eq 'Invite external user') { $r['_issues'] = @{ 'Activity' = 'ioc-guest' } } }
+$iocAuditAvailable = -not (Get-GraphFailure 'role assignment audit events')
+
+# App registrations with secrets or certificates added in the window
+$appRegs = Get-GraphAllSafe 'v1.0/applications?$select=id,appId,displayName,createdDateTime,passwordCredentials,keyCredentials&$top=999' 'application registrations'
+$iocNewCredRows = @()
+foreach ($a in $appRegs) {
+    foreach ($c in @($a.passwordCredentials) + @($a.keyCredentials)) {
+        if ($c -and $c.startDateTime -and ([datetime]$c.startDateTime) -ge $iocSinceDate) {
+            $iocNewCredRows += [ordered]@{ 'Application' = $a.displayName; 'Credential' = $(if ($c.secretText -or $c.hint -or $c.PSObject.Properties['hint']) { 'Client secret' } elseif ($c.type) { "Certificate ($($c.type))" } else { 'Credential' }); 'Name' = $c.displayName; 'Valid from' = (Format-DateText $c.startDateTime); 'Expires' = (Format-DateText $c.endDateTime); '_issues' = @{ 'Credential' = 'ioc-app-cred' } }
+        }
+    }
+}
+# Enterprise applications (service principals) added in the window, with the permissions already resolved for section 10
+$AppRowByName = @{}; foreach ($r in $appRows) { if ($r -and $r['Application']) { $AppRowByName[[string]$r['Application']] = $r } }
+$iocNewAppRows = @($servicePrincipals | Where-Object { $_.createdDateTime -and ([datetime]$_.createdDateTime) -ge $iocSinceDate } | Sort-Object createdDateTime -Descending | ForEach-Object {
+    $ar = $AppRowByName[[string]$_.displayName]
+    [ordered]@{ 'Application' = $_.displayName; 'Publisher' = $(if ($ar) { $ar['Publisher'] } elseif ($_.publisherName) { $_.publisherName } else { 'Unknown' }); 'Added' = (Format-DateText $_.createdDateTime); 'Delegated permissions' = $(if ($ar) { Join-List (@($ar['Admin-consented delegated permissions'], $ar['User-consented delegated permissions']) | Where-Object { $_ -and $_ -ne 'None' }) '; ' } else { '' }); 'Application permissions' = $(if ($ar) { $ar['Application permissions'] } else { '' }); '_issues' = @{ 'Application' = 'ioc-new-app' } }
+})
+# Accounts created in the window (from the user list already collected)
+$iocNewUserRows = @($users | Where-Object { $_.createdDateTime -and ([datetime]$_.createdDateTime) -ge $iocSinceDate } | Sort-Object createdDateTime -Descending | ForEach-Object {
+    [ordered]@{ 'User' = $_.displayName; 'UPN' = $_.userPrincipalName; 'Type' = $_.userType; 'Enabled' = $_.accountEnabled; 'Created' = (Format-DateText $_.createdDateTime); 'Licensed' = $(if (@($_.assignedLicenses).Count) { 'Yes' } else { 'No' }); 'Admin' = $(if ($AdminIds.ContainsKey($_.id)) { 'Yes' } else { 'No' }); '_issues' = @{ 'Created' = $(if ($_.userType -eq 'Guest') { 'ioc-guest' } else { 'ioc-new-user' }) }; '_tags' = $(if ($_.userType -eq 'Guest') { 'guest' } else { 'member' }) }
+})
+
+# Sign-in log (Entra ID P1): countries, legacy protocols, MFA denials, Conditional Access blocks, password spray, lockouts
+$signInDays = [Math]::Min($AuditDays, 30)
+$signInSince = (Get-Date).AddDays(-$signInDays).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+$signInSelect = 'id,createdDateTime,userPrincipalName,userDisplayName,appDisplayName,clientAppUsed,ipAddress,location,status,riskLevelDuringSignIn,riskLevelAggregated,riskState,conditionalAccessStatus,deviceDetail'
+$iocSignInsCollected = $false
+$countryRows = @(); $multiCountryRows = @(); $legacySignInRows = @(); $mfaDeniedRows = @(); $caBlockedRows = @(); $sprayRows = @(); $lockoutRows = @(); $riskySignInRows = @()
+$iocSignInNote = ''
+if ($script:HasEntraP1 -eq $false) { $iocSignInNote = "Sign-in log analysis requires Entra ID P1 or P2, which is not licensed in this tenant." }
+else {
+    Write-Host "Analysing sign-ins (last $signInDays days)..." -ForegroundColor Cyan
+    $okSignIns = Get-GraphAllSafe "v1.0/auditLogs/signIns?`$filter=$([uri]::EscapeDataString("createdDateTime ge $signInSince and status/errorCode eq 0"))&`$select=$signInSelect&`$top=999" 'successful sign-ins' -MaxItems 8000
+    if (-not (Get-GraphFailure 'successful sign-ins')) {
+        $iocSignInsCollected = $true
+        $capped = $okSignIns.Count -ge 8000
+        $byCountry = @{}; $userCountries = @{}
+        foreach ($si in $okSignIns) {
+            $c = [string]$si.location.countryOrRegion; if (-not $c) { $c = 'Unknown' }
+            if (-not $byCountry.ContainsKey($c)) { $byCountry[$c] = @{ Count = 0; Users = @{} } }
+            $byCountry[$c].Count++; $byCountry[$c].Users[[string]$si.userPrincipalName] = $true
+            $u = [string]$si.userPrincipalName
+            if (-not $userCountries.ContainsKey($u)) { $userCountries[$u] = @{} }
+            if (-not $userCountries[$u].ContainsKey($c)) { $userCountries[$u][$c] = @{ Count = 0; Last = $null; Cities = @{}; Ips = @{} } }
+            $userCountries[$u][$c].Count++; $userCountries[$u][$c].Cities[[string]$si.location.city] = $true; $userCountries[$u][$c].Ips[[string]$si.ipAddress] = $true
+            if (-not $userCountries[$u][$c].Last -or ([datetime]$si.createdDateTime) -gt $userCountries[$u][$c].Last) { $userCountries[$u][$c].Last = [datetime]$si.createdDateTime }
+        }
+        $homeCountry = ($byCountry.GetEnumerator() | Sort-Object { $_.Value.Count } -Descending | Select-Object -First 1).Key
+        $countryRows = @($byCountry.GetEnumerator() | Sort-Object { $_.Value.Count } -Descending | ForEach-Object {
+            [ordered]@{ 'Country' = $_.Key; 'Successful sign-ins' = $_.Value.Count; 'Distinct users' = $_.Value.Users.Count; 'Share' = "$([math]::Round(100 * $_.Value.Count / [Math]::Max(1, $okSignIns.Count)))%"; '_issues' = $(if ($_.Key -ne $homeCountry -and $_.Key -ne 'Unknown') { @{ 'Country' = 'ioc-multi-country' } } else { $null }) }
+        })
+        foreach ($u in ($userCountries.Keys | Sort-Object)) {
+            $cs = @($userCountries[$u].Keys | Where-Object { $_ -ne 'Unknown' })
+            if ($cs.Count -gt 1) {
+                $uo = $UserByUpn[$u.ToLower()]
+                $multiCountryRows += [ordered]@{ 'User' = $(if ($uo) { $uo.displayName } else { $u }); 'UPN' = $u; 'Countries' = (Join-List ($cs | Sort-Object { -$userCountries[$u][$_].Count } | ForEach-Object { "$_ ($($userCountries[$u][$_].Count))" }) ', '); 'Cities' = (Join-List (@($cs | ForEach-Object { $userCountries[$u][$_].Cities.Keys }) | Where-Object { $_ } | Select-Object -Unique -First 6) ', '); 'Last sign-in outside home country' = (Format-DateText (($cs | Where-Object { $_ -ne $homeCountry } | ForEach-Object { $userCountries[$u][$_].Last }) | Sort-Object -Descending | Select-Object -First 1)); 'Admin' = $(if ($uo -and $AdminIds.ContainsKey($uo.id)) { 'Yes' } else { 'No' }); '_issues' = @{ 'Countries' = 'ioc-multi-country' }; '_tags' = $(if ($uo -and $AdminIds.ContainsKey($uo.id)) { 'admin' } else { 'user' }) }
+            }
+        }
+        $legacyClients = 'Exchange ActiveSync|IMAP4|POP3|^SMTP|Authenticated SMTP|Exchange Web Services|MAPI Over HTTP|Offline Address Book|Other clients|Outlook Anywhere|Reporting Web Services|Universal Outlook|AutoDiscover|Exchange Online PowerShell'
+        $legacyBy = @{}
+        foreach ($si in ($okSignIns | Where-Object { [string]$_.clientAppUsed -match $legacyClients })) {
+            $k = "$($si.userPrincipalName)|$($si.clientAppUsed)"
+            if (-not $legacyBy.ContainsKey($k)) { $legacyBy[$k] = @{ User = $si.userPrincipalName; Client = $si.clientAppUsed; Count = 0; Last = $null; Apps = @{}; Countries = @{} } }
+            $legacyBy[$k].Count++; $legacyBy[$k].Apps[[string]$si.appDisplayName] = $true; $legacyBy[$k].Countries[[string]$si.location.countryOrRegion] = $true
+            if (-not $legacyBy[$k].Last -or ([datetime]$si.createdDateTime) -gt $legacyBy[$k].Last) { $legacyBy[$k].Last = [datetime]$si.createdDateTime }
+        }
+        $legacySignInRows = @($legacyBy.Values | Sort-Object { $_.Count } -Descending | ForEach-Object { [ordered]@{ 'User' = $_.User; 'Protocol / client' = $_.Client; 'Successful sign-ins' = $_.Count; 'Applications' = (Join-List ($_.Apps.Keys | Where-Object { $_ })); 'Countries' = (Join-List ($_.Countries.Keys | Where-Object { $_ })); 'Last' = (Format-DateText $_.Last); '_issues' = @{ 'Protocol / client' = 'ioc-legacy-signin' } } })
+        $riskySignInRows = @($okSignIns | Where-Object { ([string]$_.riskLevelDuringSignIn -match '^(low|medium|high)$') -or ([string]$_.riskLevelAggregated -match '^(medium|high)$') } | Sort-Object createdDateTime -Descending | Select-Object -First 100 | ForEach-Object { [ordered]@{ 'Date (local)' = (Format-DateText $_.createdDateTime); 'User' = $_.userPrincipalName; 'Risk during sign-in' = $_.riskLevelDuringSignIn; 'Aggregated risk' = $_.riskLevelAggregated; 'Risk state' = $_.riskState; 'Application' = $_.appDisplayName; 'IP address' = $_.ipAddress; 'Location' = (Join-List (@($_.location.city, $_.location.countryOrRegion) | Where-Object { $_ }) ', '); '_issues' = @{ 'Risk during sign-in' = 'ioc-risk-detection' } } })
+
+        function Get-FailedSignIns { param([int]$Code, [string]$What) return @(Get-GraphAllSafe "v1.0/auditLogs/signIns?`$filter=$([uri]::EscapeDataString("createdDateTime ge $signInSince and status/errorCode eq $Code"))&`$select=$signInSelect&`$top=999" $What -MaxItems 5000) }
+        function Group-SignInsByUser { param($SignIns, [string]$Issue)
+            $g = @{}
+            foreach ($si in $SignIns) { $u = [string]$si.userPrincipalName; if (-not $g.ContainsKey($u)) { $g[$u] = @{ Count = 0; Last = $null; Ips = @{}; Countries = @{}; Apps = @{} } }; $g[$u].Count++; $g[$u].Ips[[string]$si.ipAddress] = $true; $g[$u].Countries[[string]$si.location.countryOrRegion] = $true; $g[$u].Apps[[string]$si.appDisplayName] = $true; if (-not $g[$u].Last -or ([datetime]$si.createdDateTime) -gt $g[$u].Last) { $g[$u].Last = [datetime]$si.createdDateTime } }
+            return @($g.GetEnumerator() | Sort-Object { $_.Value.Count } -Descending | ForEach-Object { $uo = $UserByUpn[$_.Key.ToLower()]; [ordered]@{ 'User' = $_.Key; 'Attempts' = $_.Value.Count; 'Distinct IP addresses' = $_.Value.Ips.Count; 'Countries' = (Join-List ($_.Value.Countries.Keys | Where-Object { $_ })); 'Applications' = (Join-List ($_.Value.Apps.Keys | Where-Object { $_ } | Select-Object -First 4)); 'Last' = (Format-DateText $_.Value.Last); 'Admin' = $(if ($uo -and $AdminIds.ContainsKey($uo.id)) { 'Yes' } else { 'No' }); '_issues' = @{ 'Attempts' = $Issue } } })
+        }
+        $mfaDeniedRows = Group-SignInsByUser (Get-FailedSignIns 500121 'MFA failed sign-ins') 'ioc-mfa-denied'
+        $caBlockedRows = Group-SignInsByUser (Get-FailedSignIns 53003 'Conditional Access blocked sign-ins') 'ioc-ca-blocked'
+        $lockoutRows   = Group-SignInsByUser (Get-FailedSignIns 50053 'locked-out sign-ins') 'ioc-lockout'
+        $badPw = Get-FailedSignIns 50126 'wrong-password sign-ins'
+        $byIp = @{}
+        foreach ($si in $badPw) { $ip = [string]$si.ipAddress; if (-not $ip) { continue }; if (-not $byIp.ContainsKey($ip)) { $byIp[$ip] = @{ Count = 0; Users = @{}; Country = [string]$si.location.countryOrRegion; Last = $null } }; $byIp[$ip].Count++; $byIp[$ip].Users[[string]$si.userPrincipalName] = $true; if (-not $byIp[$ip].Last -or ([datetime]$si.createdDateTime) -gt $byIp[$ip].Last) { $byIp[$ip].Last = [datetime]$si.createdDateTime } }
+        $sprayRows = @($byIp.GetEnumerator() | Where-Object { $_.Value.Users.Count -ge 3 -or $_.Value.Count -ge 20 } | Sort-Object { $_.Value.Users.Count } -Descending | Select-Object -First 50 | ForEach-Object { [ordered]@{ 'Source IP address' = $_.Key; 'Country' = $_.Value.Country; 'Failed passwords' = $_.Value.Count; 'Distinct accounts targeted' = $_.Value.Users.Count; 'Accounts (sample)' = (Join-List ($_.Value.Users.Keys | Select-Object -First 5)); 'Last attempt' = (Format-DateText $_.Value.Last); '_issues' = @{ 'Distinct accounts targeted' = 'ioc-spray' } } })
+        $badPwTotal = $badPw.Count; $badPwUsers = @($badPw | ForEach-Object { $_.userPrincipalName } | Select-Object -Unique).Count
+        if ($capped) { $iocSignInNote = "Successful sign-ins were capped at 8,000 records for the country analysis; the tenant has more in the window." }
+    } else { $iocSignInNote = "Sign-in log could not be read: $(Get-GraphFailure 'successful sign-ins')" }
+}
+
+# Entra ID Protection (P2): risky users and risk detections
+$riskyUserRows = @(); $riskDetectionRows = @(); $iocRiskNote = ''
+if ($script:HasEntraP2 -eq $false) { $iocRiskNote = 'Entra ID Protection (risky users, risk detections) requires Entra ID P2, which is not licensed in this tenant.' }
+else {
+    $riskyUsers = Get-GraphAllSafe "v1.0/identityProtection/riskyUsers?`$filter=$([uri]::EscapeDataString("riskState eq 'atRisk' or riskState eq 'confirmedCompromised'"))" 'risky users'
+    $riskyUserRows = @($riskyUsers | Sort-Object riskLastUpdatedDateTime -Descending | ForEach-Object { [ordered]@{ 'User' = $_.userDisplayName; 'UPN' = $_.userPrincipalName; 'Risk level' = $_.riskLevel; 'Risk state' = $_.riskState; 'Detail' = $_.riskDetail; 'Last updated' = (Format-DateText $_.riskLastUpdatedDateTime); '_issues' = @{ 'Risk level' = 'ioc-risky-user' } } })
+    $riskDetections = Get-GraphAllSafe "v1.0/identityProtection/riskDetections?`$filter=$([uri]::EscapeDataString("detectedDateTime ge $since"))" 'risk detections' -MaxItems 500
+    $riskDetectionRows = @($riskDetections | Sort-Object detectedDateTime -Descending | Select-Object -First 200 | ForEach-Object { [ordered]@{ 'Detected (local)' = (Format-DateText $_.detectedDateTime); 'User' = $_.userPrincipalName; 'Detection' = $_.riskEventType; 'Level' = $_.riskLevel; 'State' = $_.riskState; 'IP address' = $_.ipAddress; 'Location' = (Join-List (@($_.location.city, $_.location.countryOrRegion) | Where-Object { $_ }) ', '); '_issues' = @{ 'Detection' = 'ioc-risk-detection' } } })
+    if (Get-GraphFailure 'risky users') { $iocRiskNote = "Entra ID Protection could not be read: $(Get-GraphFailure 'risky users')" }
+}
+
+# Roll-up: urgent items (investigate today) versus items to review
+$iocUrgent = [ordered]@{}; $iocReview = [ordered]@{}
+if ($iocDomainRows.Count)         { $iocUrgent['Domain or federation changes'] = $iocDomainRows.Count }
+if ($suspiciousRuleRows.Count)    { $iocUrgent['Inbox rules that hide, delete or forward mail'] = $suspiciousRuleRows.Count }
+if ($riskyUserRows.Count)         { $iocUrgent['Users flagged at risk by Entra ID Protection'] = $riskyUserRows.Count }
+if ($legacySignInRows.Count)      { $iocUrgent['Successful legacy authentication sign-ins (user / protocol pairs)'] = $legacySignInRows.Count }
+if (@($sprayRows | Where-Object { $_['Distinct accounts targeted'] -ge 5 }).Count) { $iocUrgent['Password spray sources (5 or more accounts targeted)'] = @($sprayRows | Where-Object { $_['Distinct accounts targeted'] -ge 5 }).Count }
+if ($mailboxAuditDisabled -eq $true) { $iocUrgent['Mailbox auditing disabled'] = 1 }
+if ($iocRoleRows.Count)           { $iocReview['Privileged role assignments added'] = $iocRoleRows.Count }
+if ($iocMfaRows.Count)            { $iocReview['Security info (MFA) registered or changed'] = $iocMfaRows.Count }
+if ($iocPwAdminRows.Count)        { $iocReview['Password resets by another account'] = $iocPwAdminRows.Count }
+if ($iocCaRows.Count)             { $iocReview['Conditional Access and security policy changes'] = $iocCaRows.Count }
+if ($iocAppRows.Count + $iocNewCredRows.Count) { $iocReview['Application credentials and ownership changes'] = $iocAppRows.Count + $iocNewCredRows.Count }
+if ($iocNewAppRows.Count)         { $iocReview['New enterprise applications'] = $iocNewAppRows.Count }
+if ($iocNewUserRows.Count)        { $iocReview['Accounts created (members and guests)'] = $iocNewUserRows.Count }
+if ($fullAccessRows.Count)        { $iocReview['Full Access mailbox delegates'] = $fullAccessRows.Count }
+if ($sendAsRows.Count)            { $iocReview['Send As grants'] = $sendAsRows.Count }
+if ($recentTransportRows.Count)   { $iocReview['Mail flow rules changed'] = $recentTransportRows.Count }
+if ($multiCountryRows.Count)      { $iocReview['Users signing in from more than one country'] = $multiCountryRows.Count }
+if ($mfaDeniedRows.Count)         { $iocReview['Users with MFA denied or failed'] = $mfaDeniedRows.Count }
+if ($caBlockedRows.Count)         { $iocReview['Users blocked by Conditional Access'] = $caBlockedRows.Count }
+if ($riskDetectionRows.Count)     { $iocReview['Risk detections'] = $riskDetectionRows.Count }
+if ($riskySignInRows.Count)       { $iocReview['Risky sign-ins'] = $riskySignInRows.Count }
+if ($lockoutRows.Count)           { $iocReview['Accounts locked out'] = $lockoutRows.Count }
+$iocUrgentCount = 0; foreach ($v in $iocUrgent.Values) { $iocUrgentCount += [int]$v }
+$iocReviewCount = 0; foreach ($v in $iocReview.Values) { $iocReviewCount += [int]$v }
+$iocCollected = $iocAuditAvailable -or $exoCollected -or $iocSignInsCollected
+$iocStatus = if (-not $iocCollected) { 'Not collected' } elseif ($iocUrgentCount -gt 0) { "$iocUrgentCount urgent, $iocReviewCount to review" } elseif ($iocReviewCount -gt 0) { "$iocReviewCount to review" } else { 'None found' }
+$iocEvidence = if (-not $iocCollected) { 'Directory audit log, Exchange and sign-in log were all unavailable.' } else { (Join-List (@($iocUrgent.Keys | ForEach-Object { "URGENT $_ ($($iocUrgent[$_]))" }) + @($iocReview.Keys | ForEach-Object { "$_ ($($iocReview[$_]))" })) '; ') }
+if (-not $iocEvidence) { $iocEvidence = "No indicators in the last $AuditDays days across the directory audit log$(if ($exoCollected) { ', Exchange Online' })$(if ($iocSignInsCollected) { ', the sign-in log' })$(if ($script:HasEntraP2 -and -not $iocRiskNote) { ' and Entra ID Protection' })." }
+$iocKv = [ordered]@{}
+$iocKvIssues = @{}
+foreach ($k in $iocUrgent.Keys) { $iocKv[$k] = $iocUrgent[$k]; $iocKvIssues[$k] = 'ioc-urgent' }
+foreach ($k in $iocReview.Keys) { $iocKv[$k] = $iocReview[$k]; $iocKvIssues[$k] = 'ioc-review' }
+if ($iocSignInsCollected) { $iocKv['Successful sign-ins analysed'] = "$($okSignIns.Count) in $signInDays days from $($countryRows.Count) countr$(if ($countryRows.Count -eq 1) { 'y' } else { 'ies' }); home country $homeCountry"; $iocKv['Wrong-password attempts'] = "$badPwTotal against $badPwUsers account(s)" }
+if ($exoCollected -and $mailboxAuditDisabled -eq $false) { $iocKv['Mailbox auditing'] = 'Enabled (organization-wide)' }
+if ($mailboxAuditDisabled -eq $true) { $iocKvIssues['Mailbox auditing disabled'] = 'ioc-audit-off' }
+$IocAuditFilters = @(@{ Label = 'By another account'; Tag = 'other' }, @{ Label = 'Self-service'; Tag = 'self' })
+
+# ----------------------------------------------------------------------------------------------
+# Microsoft Teams (section 16): guest and external access policy, every team with owners, members, guests, activity
+# ----------------------------------------------------------------------------------------------
+Write-Host "Collecting Microsoft Teams..." -ForegroundColor Cyan
+$teamGroups = Get-GraphAllSafe "v1.0/groups?`$filter=$([uri]::EscapeDataString("resourceProvisioningOptions/Any(x:x eq 'Team')"))&`$select=id,displayName,visibility,createdDateTime,description,mail,classification,membershipRule,groupTypes&`$top=999" 'teams'
+$teamsActivity = @{}
+foreach ($r in (Get-GraphReportCsv "getTeamsTeamActivityDetail(period='D90')" 'Teams activity report')) { if ($r.'Team Id') { $teamsActivity[[string]$r.'Team Id'] = $r } }
+$groupSettings = Get-GraphAllSafe 'v1.0/groupSettings' 'group settings'
+$unified = $groupSettings | Where-Object { $_.displayName -eq 'Group.Unified' } | Select-Object -First 1
+function Get-GroupSettingValue { param([string]$Name) if (-not $unified) { return $null } ; $v = ($unified.values | Where-Object { $_.name -eq $Name } | Select-Object -First 1).value; return $v }
+$allowAddGuests = Get-GroupSettingValue 'AllowToAddGuests'; $allowGuestsAccess = Get-GroupSettingValue 'AllowGuestsToAccessGroups'
+$teamRows = @(); $teamsWithGuests = 0; $teamsPublic = 0; $teamsNoOwner = 0; $teamsInactive = 0; $teamsArchived = 0; $teamGuestTotal = 0
+$teamLimit = 400; $teamIdx = 0
+foreach ($g in ($teamGroups | Sort-Object displayName)) {
+    $teamIdx++
+    if ($teamIdx -gt $teamLimit) { break }
+    Write-Progress -Activity 'Reading teams' -Status $g.displayName -PercentComplete ([int](100 * $teamIdx / [Math]::Max(1, [Math]::Min($teamLimit, @($teamGroups).Count))))
+    $owners  = @(Get-GraphAllSafe "v1.0/groups/$($g.id)/owners?`$select=id,displayName,userPrincipalName" "owners of $($g.displayName)")
+    $members = @(Get-GraphAllSafe "v1.0/groups/$($g.id)/members?`$select=id,displayName,userPrincipalName,userType&`$top=999" "members of $($g.displayName)")
+    $guests  = @($members | Where-Object { $_.userType -eq 'Guest' -or ([string]$_.userPrincipalName) -match '#EXT#' })
+    $team    = (Get-GraphAllSafe "v1.0/teams/$($g.id)?`$select=isArchived,memberSettings,guestSettings,messagingSettings" "settings of team $($g.displayName)" -NoPaging) | Select-Object -First 1
+    $act     = $teamsActivity[[string]$g.id]
+    $lastAct = if ($act -and $act.'Last Activity Date') { try { [datetime]$act.'Last Activity Date' } catch { $null } } else { $null }
+    $inactive = ($null -eq $lastAct -and $g.createdDateTime -and ([datetime]$g.createdDateTime) -lt (Get-Date).AddDays(-$StaleDays)) -or ($lastAct -and $lastAct -lt (Get-Date).AddDays(-$StaleDays))
+    $is = @{}; $tags = @()
+    if ($guests.Count) { $is['Guests'] = 'teams-guests'; $tags += 'guests'; $teamsWithGuests++; $teamGuestTotal += $guests.Count }
+    if ($g.visibility -eq 'Public') { $is['Visibility'] = 'teams-public'; $tags += 'public'; $teamsPublic++ }
+    if ($owners.Count -eq 0) { $is['Owners'] = 'teams-no-owner'; $tags += 'noowner'; $teamsNoOwner++ } elseif ($owners.Count -eq 1) { $is['Owners'] = 'teams-single-owner'; $tags += 'singleowner' }
+    if ($inactive) { $is['Last activity'] = 'teams-inactive'; $tags += 'inactive'; $teamsInactive++ }
+    if ($team -and $team.isArchived) { $tags += 'archived'; $teamsArchived++ }
+    $teamRows += [ordered]@{
+        'Team' = $g.displayName; 'Visibility' = $(if ($g.visibility) { $g.visibility } else { 'Private' }); 'Archived' = $(if ($team) { [bool]$team.isArchived } else { '' })
+        'Owners' = $(if ($owners.Count -le 3) { Join-List ($owners | ForEach-Object { $_.displayName }) } else { "$($owners.Count) owners" }); 'Members' = $members.Count; 'Guests' = $guests.Count
+        'Guest names' = (Join-List ($guests | ForEach-Object { $_.displayName } | Select-Object -First 5) '; ')
+        'Last activity' = $(if ($lastAct) { $lastAct.ToString('yyyy-MM-dd') } elseif ($act) { 'None in 90 days' } else { '' }); 'Active users (90 days)' = $(if ($act) { $act.'Active Users' } else { '' })
+        'Members may add apps / connectors' = $(if ($team -and $team.memberSettings) { "$($team.memberSettings.allowAddRemoveApps) / $($team.memberSettings.allowCreateUpdateRemoveConnectors)" } else { '' })
+        'Guests may create channels' = $(if ($team -and $team.guestSettings) { [bool]$team.guestSettings.allowCreateUpdateChannels } else { '' })
+        'Created' = (Format-DateText $g.createdDateTime); 'Classification' = $g.classification
+        '_issues' = $is; '_tags' = ($tags -join ' ')
+    }
+}
+Write-Progress -Activity 'Reading teams' -Completed
+$teamRows = @($teamRows)
+$TeamFilters = @(@{ Label = 'Guests'; Tag = 'guests' }, @{ Label = 'Public'; Tag = 'public' }, @{ Label = 'No owner'; Tag = 'noowner' }, @{ Label = 'Single owner'; Tag = 'singleowner' }, @{ Label = "Inactive ($StaleDays days)"; Tag = 'inactive' }, @{ Label = 'Archived'; Tag = 'archived' })
+$teamsConcealed = $teamsActivity.Count -and (Test-ConcealedReportNames @($teamsActivity.Values) 'Team Name')
+
+# Tenant-wide Teams policies need the MicrosoftTeams module (optional) and the Skype and Teams Tenant Admin API permission
+$teamsPolicyKv = [ordered]@{}; $teamsPolicyIssues = @{}; $teamsPolicyNote = ''; $teamsPolicyCollected = $false
+if (Get-Module -ListAvailable MicrosoftTeams) {
+    if ($script:GraphToken -and $script:GraphToken.RefreshToken) {
+        try {
+            Write-Host "Collecting Teams tenant policies..." -ForegroundColor Cyan
+            $teamsToken = Request-ResourceToken '48ac35b8-9aa8-4d74-927d-1f4a14a0b239/.default'
+            Import-Module MicrosoftTeams -ErrorAction Stop
+            Connect-MicrosoftTeams -AccessTokens @($script:GraphToken.AccessToken, $teamsToken) -ErrorAction Stop | Out-Null
+            function Invoke-TeamsSafe { param([scriptblock]$Script, [string]$What) try { return (& $Script) } catch { Write-Verbose "Could not read $What : $($_.Exception.Message)"; return $null } }
+            $fed  = Invoke-TeamsSafe { Get-CsTenantFederationConfiguration } 'federation configuration'
+            $tcc  = Invoke-TeamsSafe { Get-CsTeamsClientConfiguration -Identity Global } 'client configuration'
+            $mtg  = Invoke-TeamsSafe { Get-CsTeamsMeetingPolicy -Identity Global } 'global meeting policy'
+            if ($fed -or $tcc -or $mtg) {
+                $teamsPolicyCollected = $true
+                $allowedDomains = if ($fed) { $ad = $fed.AllowedDomains; if ($ad -and $ad.PSObject.Properties['AllowedDomain'] -and @($ad.AllowedDomain).Count) { Join-List (@($ad.AllowedDomain) | ForEach-Object { [string]$_.Domain }) } elseif (([string]$ad) -match 'AllowAllKnownDomains') { 'All external domains' } else { [string]$ad } } else { '' }
+                $teamsPolicyKv['External access (federation) with other organizations'] = $(if ($fed) { $(if ($fed.AllowFederatedUsers) { "Enabled; allowed domains: $allowedDomains$(if (@($fed.BlockedDomains).Count) { "; blocked: $(Join-List (@($fed.BlockedDomains) | ForEach-Object { [string]$_.Domain }))" })" } else { 'Disabled' }) } else { 'Not collected' })
+                $teamsPolicyKv['Chat with Teams personal (consumer) accounts']      = $(if ($fed) { "$($fed.AllowTeamsConsumer) (inbound: $($fed.AllowTeamsConsumerInbound))" } else { 'Not collected' })
+                $teamsPolicyKv['Chat with Skype (consumer) users']                   = $(if ($fed) { [string]$fed.AllowPublicUsers } else { 'Not collected' })
+                $teamsPolicyKv['Guest access to Teams']                              = $(if ($tcc) { [string]$tcc.AllowGuestUser } else { 'Not collected' })
+                $teamsPolicyKv['Third-party cloud storage in Teams (Dropbox / Box / Google Drive / ShareFile / Egnyte)'] = $(if ($tcc) { "$($tcc.AllowDropBox) / $($tcc.AllowBox) / $($tcc.AllowGoogleDrive) / $($tcc.AllowShareFile) / $($tcc.AllowEgnyte)" } else { 'Not collected' })
+                $teamsPolicyKv['Email into channels']                                = $(if ($tcc) { [string]$tcc.AllowEmailIntoChannel } else { 'Not collected' })
+                $teamsPolicyKv['Anonymous users can join meetings (global policy)']  = $(if ($mtg) { [string]$mtg.AllowAnonymousUsersToJoinMeeting } else { 'Not collected' })
+                $teamsPolicyKv['Anonymous users can start meetings']                 = $(if ($mtg) { [string]$mtg.AllowAnonymousUsersToStartMeeting } else { 'Not collected' })
+                $teamsPolicyKv['Who bypasses the lobby']                             = $(if ($mtg) { [string]$mtg.AutoAdmittedUsers } else { 'Not collected' })
+                $teamsPolicyKv['Dial-in users bypass the lobby']                     = $(if ($mtg) { [string]$mtg.AllowPSTNUsersToBypassLobby } else { 'Not collected' })
+                $teamsPolicyKv['External participants can take control']             = $(if ($mtg) { [string]$mtg.AllowExternalParticipantGiveRequestControl } else { 'Not collected' })
+                $teamsPolicyKv['Cloud recording allowed']                            = $(if ($mtg) { [string]$mtg.AllowCloudRecording } else { 'Not collected' })
+                if ($fed -and $fed.AllowFederatedUsers -and $allowedDomains -eq 'All external domains') { $teamsPolicyIssues['External access (federation) with other organizations'] = 'teams-federation-open' }
+                if ($fed -and $fed.AllowTeamsConsumer) { $teamsPolicyIssues['Chat with Teams personal (consumer) accounts'] = 'teams-federation-open' }
+                if ($mtg -and $mtg.AllowAnonymousUsersToJoinMeeting -and ([string]$mtg.AutoAdmittedUsers) -match 'Everyone') { $teamsPolicyIssues['Anonymous users can join meetings (global policy)'] = 'teams-anon-join' }
+            }
+        } catch {
+            $msg = $_.Exception.Message
+            try { $body = $_.ErrorDetails.Message; if ($body) { $j = $body | ConvertFrom-Json; if ($j.error_description) { $msg = ([string]$j.error_description -split "`r?`n")[0] } } } catch { Write-Verbose 'Teams error body was not JSON.' }
+            $teamsPolicyNote = if ($msg -match 'AADSTS65001|AADSTS650|consent') { "The Skype and Teams Tenant Admin API permission has not been consented for the connector. A Global Administrator can grant it at https://login.microsoftonline.com/$($ctx.TenantId)/adminconsent?client_id=$($script:GraphClientId)" } else { "Teams tenant policies could not be read: $msg" }
+            Write-Warning "Teams policies: $teamsPolicyNote"
+        } finally { try { Disconnect-MicrosoftTeams -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch { Write-Verbose 'Teams session was already closed.' } }
+    } else { $teamsPolicyNote = 'Teams tenant policies were not collected: device-code sign-in was used (no refresh token for the Teams admin API).' }
+} else { $teamsPolicyNote = 'Teams tenant policies (external access, guest access, meeting policy) were not collected: the MicrosoftTeams PowerShell module is not installed. Install-Module MicrosoftTeams -Scope CurrentUser adds them to the next report.' }
+if (-not $teamsPolicyCollected) { $teamsPolicyKv['Tenant-wide Teams policies'] = $teamsPolicyNote; $teamsPolicyIssues['Tenant-wide Teams policies'] = 'teams-policies-na' }
+$teamsKv = [ordered]@{
+    'Teams in the tenant'                                   = $(if (Get-GraphFailure 'teams') { "Not available: $(Get-GraphFailure 'teams')" } else { @($teamGroups).Count })
+    'Teams with guests / total guest memberships'           = "$teamsWithGuests / $teamGuestTotal"
+    'Public teams (anyone in the organization can join)'    = $teamsPublic
+    'Teams with no owner'                                   = $teamsNoOwner
+    "Inactive teams (no activity in $StaleDays days)"       = $(if ($teamsActivity.Count) { $teamsInactive } else { "Activity report not available$(if (Get-GraphFailure 'Teams activity report') { ": $(Get-GraphFailure 'Teams activity report')" })" })
+    'Archived teams'                                        = $teamsArchived
+    'Members may invite guests to Teams and Microsoft 365 Groups (Group.Unified AllowToAddGuests)' = $(if ($null -ne $allowAddGuests) { $allowAddGuests } elseif ($unified) { 'True (default)' } else { 'True (default; no Group.Unified setting object)' })
+    'Guests may access group content (AllowGuestsToAccessGroups)' = $(if ($null -ne $allowGuestsAccess) { $allowGuestsAccess } else { 'True (default)' })
+}
+$teamsKvIssues = @{}
+if ($teamsWithGuests) { $teamsKvIssues['Teams with guests / total guest memberships'] = 'teams-guests' }
+if ($teamsPublic) { $teamsKvIssues['Public teams (anyone in the organization can join)'] = 'teams-public' }
+if ($teamsNoOwner) { $teamsKvIssues['Teams with no owner'] = 'teams-no-owner' }
+if ($teamsActivity.Count -and $teamsInactive) { $teamsKvIssues["Inactive teams (no activity in $StaleDays days)"] = 'teams-inactive' }
+if (([string]$teamsKv['Members may invite guests to Teams and Microsoft 365 Groups (Group.Unified AllowToAddGuests)']) -match '^True') { $teamsKvIssues['Members may invite guests to Teams and Microsoft 365 Groups (Group.Unified AllowToAddGuests)'] = 'groups-guests-open' }
+$teamsStatus = if (Get-GraphFailure 'teams') { 'Not available' } elseif (([string]$teamsKv['Members may invite guests to Teams and Microsoft 365 Groups (Group.Unified AllowToAddGuests)']) -match '^False') { 'Restricted' } elseif ($teamsWithGuests) { "Guests present in $teamsWithGuests team(s)" } else { 'Allowed (no guests today)' }
+$teamsEvidence = "$(@($teamGroups).Count) teams; $teamsWithGuests with guests ($teamGuestTotal guest memberships); $teamsPublic public; $teamsNoOwner without an owner. Guest invitations by members: $($teamsKv['Members may invite guests to Teams and Microsoft 365 Groups (Group.Unified AllowToAddGuests)']). $(if ($teamsPolicyCollected) { "External access: $($teamsPolicyKv['External access (federation) with other organizations']); guest access: $($teamsPolicyKv['Guest access to Teams']); anonymous meeting join: $($teamsPolicyKv['Anonymous users can join meetings (global policy)'])." } else { 'Tenant-wide Teams policies not collected.' })"
+
+# ----------------------------------------------------------------------------------------------
+# SharePoint and OneDrive (section 17): tenant sharing settings, every site, every OneDrive, who shares externally
+# ----------------------------------------------------------------------------------------------
+Write-Host "Collecting SharePoint and OneDrive..." -ForegroundColor Cyan
+$spoSettings = (Get-GraphAllSafe 'v1.0/admin/sharepoint/settings' 'SharePoint tenant settings' -NoPaging) | Select-Object -First 1
+$spoKv = [ordered]@{}; $spoKvIssues = @{}
+$sharingLabel = @{ 'disabled' = 'Only people in the organization (external sharing off)'; 'existingExternalUserSharingOnly' = 'Existing guests only'; 'externalUserSharingOnly' = 'New and existing guests (sign-in required)'; 'externalUserAndGuestSharing' = 'Anyone (anonymous links allowed)' }
+if ($spoSettings) {
+    $cap = [string]$spoSettings.sharingCapability
+    $spoKv['External sharing (SharePoint)']              = $(if ($sharingLabel.ContainsKey($cap)) { $sharingLabel[$cap] } else { $cap })
+    $spoKv['Sharing domain restriction']                 = $(switch ([string]$spoSettings.sharingDomainRestrictionMode) { 'allowList' { "Allow list: $(Join-List $spoSettings.sharingAllowedDomainList)" } 'blockList' { "Block list: $(Join-List $spoSettings.sharingBlockedDomainList)" } default { 'None (any domain)' } })
+    $spoKv['Guests can re-share items they do not own']  = $spoSettings.isResharingByExternalUsersEnabled
+    $spoKv['Guests must sign in with the invited account'] = $spoSettings.isRequireAcceptingUserToMatchInvitedUserEnabled
+    $spoKv['Legacy authentication protocols allowed']    = $spoSettings.isLegacyAuthProtocolsEnabled
+    $spoKv['OneDrive sync restricted to managed devices'] = $spoSettings.isUnmanagedSyncAppForTenantRestricted
+    $spoKv['Mac sync client allowed']                    = $spoSettings.isMacSyncAppEnabled
+    $spoKv['Idle session sign-out']                      = $(if ($spoSettings.idleSessionSignOut -and $spoSettings.idleSessionSignOut.isEnabled) { "Enabled: warn after $([int]$spoSettings.idleSessionSignOut.warnAfterInSeconds / 60) min, sign out after $([int]$spoSettings.idleSessionSignOut.signOutAfterInSeconds / 60) min" } else { 'Disabled' })
+    $spoKv['Sync excluded file types']                   = (Join-List $spoSettings.excludedFileExtensionsForSyncApp)
+    $spoKv['Default OneDrive storage per user (GB)']     = $(if ($spoSettings.personalSiteDefaultStorageLimitInMB) { [math]::Round([double]$spoSettings.personalSiteDefaultStorageLimitInMB / 1024) } else { '' })
+    $spoKv['OneDrive retention after a user is deleted (days)'] = $spoSettings.deletedUserPersonalSiteRetentionPeriodInDays
+    $spoKv['Users can create sites']                     = $spoSettings.isSiteCreationEnabled
+    $spoKv['Loop components enabled']                    = $spoSettings.isLoopEnabled
+    if ($cap -eq 'externalUserAndGuestSharing') { $spoKvIssues['External sharing (SharePoint)'] = 'spo-anyone-links' } elseif ($cap -ne 'disabled') { $spoKvIssues['External sharing (SharePoint)'] = 'spo-external-sharing' }
+    if ($spoSettings.isResharingByExternalUsersEnabled -eq $true -and $cap -ne 'disabled') { $spoKvIssues['Guests can re-share items they do not own'] = 'spo-resharing' }
+    if ($spoSettings.isLegacyAuthProtocolsEnabled -eq $true) { $spoKvIssues['Legacy authentication protocols allowed'] = 'spo-legacy-auth' }
+    if ($spoSettings.isUnmanagedSyncAppForTenantRestricted -eq $false) { $spoKvIssues['OneDrive sync restricted to managed devices'] = 'spo-unmanaged-sync' }
+    if (-not ($spoSettings.idleSessionSignOut -and $spoSettings.idleSessionSignOut.isEnabled)) { $spoKvIssues['Idle session sign-out'] = 'spo-idle-timeout-off' }
+} else { $spoKv['SharePoint tenant settings'] = "Not available: $(Get-GraphFailure 'SharePoint tenant settings')" }
+
+$siteReport = @(Get-GraphReportCsv "getSharePointSiteUsageDetail(period='D90')" 'SharePoint site usage report')
+$siteConcealed = Test-ConcealedReportNames $siteReport 'Site URL'
+function ConvertTo-Gb { param($bytes) if ($null -eq $bytes -or $bytes -eq '') { return '' } ; return [math]::Round([double]$bytes / 1GB, 2) }
+function Get-SiteTemplateLabel { param([string]$t) switch -Regex ($t) { '^GROUP' { 'Team site (Microsoft 365 group)' } '^SITEPAGEPUBLISHING' { 'Communication site' } '^STS' { 'Team site (no group)' } '^TEAMCHANNEL' { 'Teams channel site' } '^SPSPERS|^SPSMSITE' { 'OneDrive' } '^APPCATALOG' { 'App catalog' } '^SRCHCEN|^SRCHCENTERLITE' { 'Search center' } '^POINTPUBLISHING|^PWA|^EHS|^RedirectSite' { 'System' } default { $(if ($t) { $t } else { '' }) } } }
+$siteRows = @(); $sitesInactive = 0; $sitesNoOwner = 0; $sitesDeleted = 0
+foreach ($r in ($siteReport | Sort-Object { [double]$(if ($_.'Storage Used (Byte)') { $_.'Storage Used (Byte)' } else { 0 }) } -Descending)) {
+    $last = if ($r.'Last Activity Date') { try { [datetime]$r.'Last Activity Date' } catch { $null } } else { $null }
+    $inactive = ($null -eq $last) -or ($last -lt (Get-Date).AddDays(-$StaleDays))
+    $deleted = ([string]$r.'Is Deleted') -eq 'True'
+    $is = @{}; $tags = @()
+    if ($deleted) { $tags += 'deleted'; $sitesDeleted++ }
+    elseif ($inactive) { $is['Last activity'] = 'spo-site-inactive'; $tags += 'inactive'; $sitesInactive++ }
+    if (-not $r.'Owner Principal Name' -and -not $r.'Owner Display Name') { $is['Owner'] = 'spo-site-no-owner'; $tags += 'noowner'; $sitesNoOwner++ }
+    $tpl = Get-SiteTemplateLabel ([string]$r.'Root Web Template')
+    if ($tpl -like 'Team site*') { $tags += 'team' } elseif ($tpl -eq 'Communication site') { $tags += 'comms' }
+    $siteRows += [ordered]@{ 'Site' = $r.'Site URL'; 'Type' = $tpl; 'Owner' = $(if ($r.'Owner Display Name') { "$($r.'Owner Display Name') ($($r.'Owner Principal Name'))" } else { [string]$r.'Owner Principal Name' }); 'Last activity' = $(if ($last) { $last.ToString('yyyy-MM-dd') } else { 'None in 90 days' }); 'Files' = $r.'File Count'; 'Active files (90 days)' = $r.'Active File Count'; 'Storage used (GB)' = (ConvertTo-Gb $r.'Storage Used (Byte)'); 'Page views (90 days)' = $r.'Page View Count'; 'Deleted' = $(if ($deleted) { 'Yes' } else { '' }); '_issues' = $is; '_tags' = ($tags -join ' ') }
+}
+$siteRows = @($siteRows)
+$SiteFilters = @(@{ Label = "Inactive ($StaleDays days)"; Tag = 'inactive' }, @{ Label = 'No owner'; Tag = 'noowner' }, @{ Label = 'Team sites'; Tag = 'team' }, @{ Label = 'Communication sites'; Tag = 'comms' }, @{ Label = 'Deleted'; Tag = 'deleted' })
+
+$odReport = @(Get-GraphReportCsv "getOneDriveUsageAccountDetail(period='D90')" 'OneDrive usage report')
+$odConcealed = Test-ConcealedReportNames $odReport 'Owner Principal Name'
+$odRows = @(); $odInactive = 0; $odOwnerDisabled = 0; $odOwnerMissing = 0
+foreach ($r in ($odReport | Sort-Object { [double]$(if ($_.'Storage Used (Byte)') { $_.'Storage Used (Byte)' } else { 0 }) } -Descending)) {
+    $last = if ($r.'Last Activity Date') { try { [datetime]$r.'Last Activity Date' } catch { $null } } else { $null }
+    $owner = $UserByUpn[([string]$r.'Owner Principal Name').ToLower()]
+    $is = @{}; $tags = @()
+    if (([string]$r.'Is Deleted') -eq 'True') { $tags += 'deleted' }
+    if (-not $odConcealed -and $r.'Owner Principal Name' -and -not $owner) { $is['Owner'] = 'od-owner-disabled'; $tags += 'ownermissing'; $odOwnerMissing++ }
+    elseif ($owner -and -not $owner.accountEnabled) { $is['Owner'] = 'od-owner-disabled'; $tags += 'ownerdisabled'; $odOwnerDisabled++ }
+    if (($null -eq $last) -or ($last -lt (Get-Date).AddDays(-$StaleDays))) { $tags += 'inactive'; $odInactive++ }
+    $odRows += [ordered]@{ 'Owner' = $(if ($r.'Owner Display Name') { "$($r.'Owner Display Name') ($($r.'Owner Principal Name'))" } else { [string]$r.'Owner Principal Name' }); 'Account' = $(if ($odConcealed) { 'n/a (names concealed)' } elseif (-not $owner) { 'Not in directory' } elseif ($owner.accountEnabled) { 'Enabled' } else { 'Disabled' }); 'Last activity' = $(if ($last) { $last.ToString('yyyy-MM-dd') } else { 'None in 90 days' }); 'Files' = $r.'File Count'; 'Active files (90 days)' = $r.'Active File Count'; 'Storage used (GB)' = (ConvertTo-Gb $r.'Storage Used (Byte)'); 'Deleted' = $(if (([string]$r.'Is Deleted') -eq 'True') { 'Yes' } else { '' }); '_issues' = $is; '_tags' = ($tags -join ' ') }
+}
+$odRows = @($odRows)
+$OdFilters = @(@{ Label = 'Owner disabled'; Tag = 'ownerdisabled' }, @{ Label = 'Owner not in directory'; Tag = 'ownermissing' }, @{ Label = "Inactive ($StaleDays days)"; Tag = 'inactive' }, @{ Label = 'Deleted'; Tag = 'deleted' })
+
+$spoActivity = @(Get-GraphReportCsv "getSharePointActivityUserDetail(period='D30')" 'SharePoint user activity report')
+$odActivity  = @(Get-GraphReportCsv "getOneDriveActivityUserDetail(period='D30')" 'OneDrive user activity report')
+$extShareBy = @{}
+foreach ($r in $spoActivity) { $n = [int]$(if ($r.'Shared Externally File Count') { $r.'Shared Externally File Count' } else { 0 }); if ($n -gt 0) { $u = [string]$r.'User Principal Name'; if (-not $extShareBy.ContainsKey($u)) { $extShareBy[$u] = @{ Spo = 0; Od = 0; Internal = 0 } }; $extShareBy[$u].Spo += $n; $extShareBy[$u].Internal += [int]$(if ($r.'Shared Internally File Count') { $r.'Shared Internally File Count' } else { 0 }) } }
+foreach ($r in $odActivity)  { $n = [int]$(if ($r.'Shared Externally File Count') { $r.'Shared Externally File Count' } else { 0 }); if ($n -gt 0) { $u = [string]$r.'User Principal Name'; if (-not $extShareBy.ContainsKey($u)) { $extShareBy[$u] = @{ Spo = 0; Od = 0; Internal = 0 } }; $extShareBy[$u].Od += $n } }
+$extShareRows = @($extShareBy.GetEnumerator() | Sort-Object { $_.Value.Spo + $_.Value.Od } -Descending | ForEach-Object { $uo = $UserByUpn[$_.Key.ToLower()]; [ordered]@{ 'User' = $(if ($uo) { $uo.displayName } else { $_.Key }); 'UPN' = $_.Key; 'Files shared externally from SharePoint (30 days)' = $_.Value.Spo; 'Files shared externally from OneDrive (30 days)' = $_.Value.Od; 'Files shared internally (30 days)' = $_.Value.Internal; '_issues' = @{ 'UPN' = 'spo-external-shares' } } })
+$extShareTotal = 0; foreach ($v in $extShareBy.Values) { $extShareTotal += $v.Spo + $v.Od }
+$spoKv['Sites (excluding OneDrive)']                 = $(if ($siteReport.Count) { $siteRows.Count } else { "Usage report not available$(if (Get-GraphFailure 'SharePoint site usage report') { ": $(Get-GraphFailure 'SharePoint site usage report')" })" })
+$spoKv["Inactive sites (no activity in $StaleDays days)"] = $(if ($siteReport.Count) { $sitesInactive } else { '' })
+$spoKv['Sites with no owner']                        = $(if ($siteReport.Count) { $sitesNoOwner } else { '' })
+$spoKv['OneDrive accounts']                          = $(if ($odReport.Count) { $odRows.Count } else { "Usage report not available$(if (Get-GraphFailure 'OneDrive usage report') { ": $(Get-GraphFailure 'OneDrive usage report')" })" })
+$spoKv['OneDrives whose owner is disabled or gone']  = $(if ($odReport.Count) { $odOwnerDisabled + $odOwnerMissing } else { '' })
+$spoKv['Files shared externally in the last 30 days (users / files)'] = $(if ($spoActivity.Count -or $odActivity.Count) { "$($extShareRows.Count) / $extShareTotal" } else { 'Activity report not available' })
+if ($siteReport.Count -and $sitesInactive) { $spoKvIssues["Inactive sites (no activity in $StaleDays days)"] = 'spo-site-inactive' }
+if ($siteReport.Count -and $sitesNoOwner) { $spoKvIssues['Sites with no owner'] = 'spo-site-no-owner' }
+if ($odReport.Count -and ($odOwnerDisabled + $odOwnerMissing)) { $spoKvIssues['OneDrives whose owner is disabled or gone'] = 'od-owner-disabled' }
+if ($extShareRows.Count) { $spoKvIssues['Files shared externally in the last 30 days (users / files)'] = 'spo-external-shares' }
+$spoStatus = if (-not $spoSettings) { 'Not available' } else { switch ([string]$spoSettings.sharingCapability) { 'disabled' { 'Restricted (internal only)' } 'existingExternalUserSharingOnly' { 'Restricted (existing guests only)' } 'externalUserSharingOnly' { 'Allowed (guests must sign in)' } 'externalUserAndGuestSharing' { 'Anyone links allowed' } default { [string]$spoSettings.sharingCapability } } }
+$spoEvidence = if ($spoSettings) { "External sharing: $($spoKv['External sharing (SharePoint)']); domain restriction: $($spoKv['Sharing domain restriction']); guests re-share: $($spoKv['Guests can re-share items they do not own']); legacy auth: $($spoKv['Legacy authentication protocols allowed']); unmanaged sync restricted: $($spoKv['OneDrive sync restricted to managed devices']); idle sign-out: $($spoKv['Idle session sign-out']). $(if ($siteReport.Count) { "$($siteRows.Count) sites, $sitesInactive inactive, $sitesNoOwner without owner. " })$(if ($odReport.Count) { "$($odRows.Count) OneDrives, $($odOwnerDisabled + $odOwnerMissing) with disabled or missing owner. " })$(if ($extShareRows.Count) { "$($extShareRows.Count) user(s) shared $extShareTotal file(s) externally in 30 days." })" } else { [string]$spoKv['SharePoint tenant settings'] }
+$reportConcealedNote = if ($teamsConcealed -or $siteConcealed -or $odConcealed) { "Microsoft 365 usage reports in this tenant conceal user, group and site names (they appear as hashes). To show real names, in the Microsoft 365 admin center go to Settings > Org settings > Services > Reports and clear 'Display concealed user, group, and site names in all reports'." } else { '' }
+
 # Defender for Office 365 / EOP overall status
 $safeLinksActive  = @($safeLinksRows | Where-Object { $_['Email'] -eq $true }).Count
 $safeAttachActive = @($safeAttachRows | Where-Object { $_['Enabled'] -eq $true -and $_['Action'] -ne 'Allow' }).Count
@@ -1631,6 +2124,12 @@ Add-SummaryRow 'Microsoft Secure Score' $(if ($null -eq $scoreCurrent) { 'Not av
 
 Add-SummaryRow 'Privileged role assignments' "$(@($roleRows).Count) assignments" $(if ($roles) { Join-List (($roles | Where-Object { @($_.members).Count -gt 0 } | Sort-Object displayName) | ForEach-Object { "$($_.displayName): $(@($_.members).Count)" }) '; ' } else { '' }) 'Privileged Users'
 
+Add-SummaryRow 'Indications of compromise to review' $iocStatus $iocEvidence 'Indications of Compromise'
+
+Add-SummaryRow 'Teams guest and external access' $teamsStatus $teamsEvidence 'Teams'
+
+Add-SummaryRow 'SharePoint and OneDrive external sharing' $spoStatus $spoEvidence 'SharePoint'
+
 # ----------------------------------------------------------------------------------------------
 # Remediation plan: every failed control plus every unimplemented Secure Score action, ranked by priority
 # ----------------------------------------------------------------------------------------------
@@ -1645,6 +2144,11 @@ function Add-Remediation {
 }
 # Control -> (status pattern that counts as a finding, priority, recommended action)
 $remediationGuides = @(
+    @{ Control = 'Indications of compromise to review';          Bad = '^\d+ urgent';              Priority = 'Critical'; Action = 'Today: take every item marked urgent in the Indications of Compromise section to the person named and confirm it was expected. Anything unexplained is a security incident: reset the password, revoke sessions, remove the rule, credential or setting, and engage your IT provider or incident response contact.'; Url = 'https://security.microsoft.com/incidents' }
+    @{ Control = 'Indications of compromise to review';          Bad = '^\d+ to review';           Priority = 'High';     Action = 'Within the week, match every item in the Indications of Compromise section (role assignments, MFA changes, password resets, policy changes, new apps, new accounts, delegates, multi-country sign-ins) to a change ticket or a confirmation from the person involved. Escalate anything nobody can account for.'; Url = 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/AuditLogsMenuBlade/~/Audit' }
+    @{ Control = 'SharePoint and OneDrive external sharing';     Bad = '^Anyone links';            Priority = 'High';     Action = 'In the SharePoint admin center set external sharing for SharePoint and OneDrive to "New and existing guests" (or stricter), expire existing Anyone links, set the default link type to "People you choose", and restrict sharing to approved partner domains.'; Url = 'https://admin.microsoft.com/sharepoint?page=sharing&modern=true' }
+    @{ Control = 'SharePoint and OneDrive external sharing';     Bad = '^Allowed';                 Priority = 'Low';      Action = 'Limit external sharing to an allow list of partner domains, require guests to sign in with the invited account, turn off re-sharing by guests, set guest access to expire, and review the externally shared files list monthly.'; Url = 'https://admin.microsoft.com/sharepoint?page=sharing&modern=true' }
+    @{ Control = 'Teams guest and external access';              Bad = '^(Allowed|Guests present)'; Priority = 'Low';     Action = 'Decide who may invite guests (restrict to administrators or require approval), have each team owner confirm current guests, restrict Teams external access to approved partner domains, block Teams consumer accounts, and make anonymous meeting participants wait in the lobby.'; Url = 'https://admin.teams.microsoft.com/company-wide-settings/external-communications' }
     @{ Control = 'MFA enforced for sign-in';                      Bad = '^(Not enforced|Partial)'; Priority = 'Critical'; Action = 'Create an enabled Conditional Access policy that requires MFA (or a phishing-resistant authentication strength) for all users and all cloud apps, excluding only a monitored break-glass account. Without Entra ID P1, turn on security defaults instead.' }
     @{ Control = 'MFA registered by all users';                   Bad = '^No$';                    Priority = 'High';     Action = 'Have every user listed under Users register Microsoft Authenticator (or a FIDO2 key). Use a registration campaign, then enforce MFA so unregistered accounts cannot sign in without completing it.' }
     @{ Control = 'Legacy authentication protocols disabled';      Bad = '^(Not blocked|Partial)';  Priority = 'High';     Action = 'Add a Conditional Access policy that blocks Exchange ActiveSync and "other clients" for all users. In Exchange Online disable SMTP AUTH tenant-wide and turn off POP and IMAP on every mailbox that does not need them.' }
@@ -1660,9 +2164,28 @@ $remediationGuides = @(
     @{ Control = 'Email protection (Defender for Office 365 / EOP)'; Bad = '^(Licensed, not configured|EOP only)'; Priority = 'High'; Action = 'If Defender for Office 365 is licensed, enable the Standard preset security policy for all users (Strict for executives and finance) so Safe Links, Safe Attachments and impersonation protection apply. If it is not licensed, license Plan 1 (included in Business Premium); phishing is the top attack path against bank staff.' }
     @{ Control = 'Endpoint protection (Defender for Endpoint)';  Bad = '^(Attention needed|No devices onboarded|Not licensed)'; Priority = 'Medium'; Action = 'Onboard every managed Windows and macOS device to Defender for Endpoint / Defender for Business through Intune, resolve high-risk alerts, and re-onboard or retire devices with inactive sensors.' }
 )
+# Where each control is changed: the admin center page the ticket should point at (Secure Score items carry Microsoft's own link)
+$ControlPortalUrl = @{
+    'MFA enforced for sign-in'                                   = 'https://entra.microsoft.com/#view/Microsoft_AAD_ConditionalAccess/ConditionalAccessBlade/~/Policies'
+    'MFA registered by all users'                                = 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/AuthenticationMethodsMenuBlade/~/UserRegistrationDetails'
+    'Legacy authentication protocols disabled'                   = 'https://entra.microsoft.com/#view/Microsoft_AAD_ConditionalAccess/ConditionalAccessBlade/~/Policies'
+    'Conditional Access restricts access to Entra joined or compliant devices' = 'https://entra.microsoft.com/#view/Microsoft_AAD_ConditionalAccess/ConditionalAccessBlade/~/Policies'
+    'Intune deployed to Windows computers'                       = 'https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/DevicesMenu/~/overview'
+    'Intune compliance policies'                                 = 'https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/DevicesMenu/~/compliance'
+    'Intune configuration and security policies'                 = 'https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/DevicesMenu/~/configuration'
+    'Temporary Access Pass (TAP) implemented'                    = 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/AuthenticationMethodsMenuBlade/~/AdminAuthMethods'
+    'Users restricted from joining devices to Entra ID'          = 'https://entra.microsoft.com/#view/Microsoft_AAD_Devices/DevicesMenuBlade/~/DeviceSettings'
+    'Automatic email forwarding outside the tenant'              = 'https://security.microsoft.com/antispam'
+    'User consent to applications'                               = 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/ConsentPoliciesMenuBlade/~/UserSettings'
+    'Email authentication (SPF, DKIM, DMARC)'                    = 'https://security.microsoft.com/dkimv2'
+    'Email protection (Defender for Office 365 / EOP)'           = 'https://security.microsoft.com/presetSecurityPolicies'
+    'Endpoint protection (Defender for Endpoint)'                = 'https://security.microsoft.com/machines'
+    'Microsoft Secure Score'                                     = 'https://security.microsoft.com/securescore'
+    'Security defaults'                                          = 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/ActiveDirectoryMenuBlade/~/Properties'
+}
 foreach ($g in $remediationGuides) {
     $row = $script:summaryRows | Where-Object { $_.Control -eq $g.Control } | Select-Object -First 1
-    if ($row -and ([string]$row.Status -match $g.Bad)) { Add-Remediation -Priority $g.Priority -Finding $g.Control -State "$($row.Status). $($row.Evidence)" -Action $g.Action -Section $row.Section }
+    if ($row -and ([string]$row.Status -match $g.Bad)) { Add-Remediation -Priority $g.Priority -Finding $g.Control -State "$($row.Status). $($row.Evidence)" -Action $g.Action -Section $row.Section -Url $(if ($g.Url) { $g.Url } elseif ($ControlPortalUrl.ContainsKey($g.Control)) { $ControlPortalUrl[$g.Control] } else { $null }) }
 }
 # Licensing gaps that stop whole control families from existing
 if ($script:HasIntune -eq $false)  { Add-Remediation -Priority 'Low' -Finding 'Intune is not licensed' -State 'No Intune service plan in the subscribed SKUs, so device compliance, configuration policies and device-based Conditional Access cannot be implemented.' -Action 'License Microsoft Intune (included in Microsoft 365 Business Premium, E3 and E5) and then complete the device controls above.' -Section 'Tenant Overview' }
@@ -1671,9 +2194,10 @@ if ($script:HasEntraP1 -eq $false) { Add-Remediation -Priority 'Low' -Finding 'E
 $gaRole  = $roles | Where-Object { $_.displayName -eq 'Global Administrator' } | Select-Object -First 1
 $gaCount = @($gaRole.members).Count
 $gaNoMfa = @($roleRows | Where-Object { $_.Role -eq 'Global Administrator' -and $_.'MFA registered' -eq 'No' })
-if ($gaNoMfa.Count) { Add-Remediation -Priority 'Critical' -Finding 'Global Administrators without MFA registered' -State ("$($gaNoMfa.Count) account(s): " + (Join-List ($gaNoMfa | ForEach-Object { $_.Member }))) -Action 'Register Microsoft Authenticator or a FIDO2 key for these accounts today and require MFA for all administrator roles through Conditional Access.' -Section 'Privileged Users' }
-if ($gaCount -gt 4)  { Add-Remediation -Priority 'Medium' -Finding 'Too many Global Administrators' -State "$gaCount accounts hold Global Administrator (Microsoft recommends fewer than five)." -Action 'Reduce Global Administrators to two to four, move day-to-day administration to least-privilege roles (Exchange, Intune, User Administrator), and use PIM eligible assignments where Entra ID P2 is licensed.' -Section 'Privileged Users' }
-if ($gaCount -eq 1)  { Add-Remediation -Priority 'Medium' -Finding 'Single Global Administrator' -State 'Only one account holds Global Administrator; losing access to it locks the organization out of the tenant.' -Action 'Create a second, cloud-only break-glass Global Administrator with a long random password stored offline, excluded from Conditional Access, and alerted on every sign-in.' -Section 'Privileged Users' }
+$RolesPortalUrl = 'https://entra.microsoft.com/#view/Microsoft_AAD_IAM/RolesManagementMenuBlade/~/AllRoles'
+if ($gaNoMfa.Count) { Add-Remediation -Url $RolesPortalUrl -Priority 'Critical' -Finding 'Global Administrators without MFA registered' -State ("$($gaNoMfa.Count) account(s): " + (Join-List ($gaNoMfa | ForEach-Object { $_.Member }))) -Action 'Register Microsoft Authenticator or a FIDO2 key for these accounts today and require MFA for all administrator roles through Conditional Access.' -Section 'Privileged Users' }
+if ($gaCount -gt 4)  { Add-Remediation -Url $RolesPortalUrl -Priority 'Medium' -Finding 'Too many Global Administrators' -State "$gaCount accounts hold Global Administrator (Microsoft recommends fewer than five)." -Action 'Reduce Global Administrators to two to four, move day-to-day administration to least-privilege roles (Exchange, Intune, User Administrator), and use PIM eligible assignments where Entra ID P2 is licensed.' -Section 'Privileged Users' }
+if ($gaCount -eq 1)  { Add-Remediation -Url $RolesPortalUrl -Priority 'Medium' -Finding 'Single Global Administrator' -State 'Only one account holds Global Administrator; losing access to it locks the organization out of the tenant.' -Action 'Create a second, cloud-only break-glass Global Administrator with a long random password stored offline, excluded from Conditional Access, and alerted on every sign-in.' -Section 'Privileged Users' }
 # Secure Score improvement actions that still have points available
 $ProfileById = @{}
 foreach ($p in $scoreProfiles) { $ProfileById[$p.id] = $p }
@@ -1752,20 +2276,24 @@ $sections = @(
     @{ Id = 'overview';     Title = '1. Executive Summary' },
     @{ Id = 'summary';      Title = '2. Security Controls Summary' },
     @{ Id = 'remediation';  Title = '3. Remediation Plan' },
-    @{ Id = 'mdm';          Title = '4. MDM Compliance Policies'; Sub = @($policyGroups | ForEach-Object { @{ Id = ('mdm-' + ($_.Name -replace '[^A-Za-z0-9]', '')); Title = $_.Name } }) },
-    @{ Id = 'profiles';     Title = '5. Intune Policies' },
-    @{ Id = 'devices';      Title = '6. Managed Devices' },
-    @{ Id = 'ca';           Title = '7. Conditional Access' },
-    @{ Id = 'authmethods';  Title = '8. Authentication Methods' },
-    @{ Id = 'apps';         Title = '9. Enterprise Applications' },
-    @{ Id = 'consent';      Title = '10. Application Consent Audit Events' },
-    @{ Id = 'users';        Title = '11. Users' },
-    @{ Id = 'roles';        Title = '12. Privileged Users' },
-    @{ Id = 'exchange';     Title = '13. Exchange Online' },
-    @{ Id = 'defender';     Title = '14. Defender and Email Protection' }
+    @{ Id = 'ioc';          Title = '4. Possible Indications of Compromise' },
+    @{ Id = 'mdm';          Title = '5. MDM Compliance Policies'; Sub = @($policyGroups | ForEach-Object { @{ Id = ('mdm-' + ($_.Name -replace '[^A-Za-z0-9]', '')); Title = $_.Name } }) },
+    @{ Id = 'profiles';     Title = '6. Intune Policies' },
+    @{ Id = 'devices';      Title = '7. Managed Devices' },
+    @{ Id = 'ca';           Title = '8. Conditional Access' },
+    @{ Id = 'authmethods';  Title = '9. Authentication Methods' },
+    @{ Id = 'apps';         Title = '10. Enterprise Applications' },
+    @{ Id = 'consent';      Title = '11. Application Consent Audit Events' },
+    @{ Id = 'users';        Title = '12. Users' },
+    @{ Id = 'roles';        Title = '13. Privileged Users' },
+    @{ Id = 'exchange';     Title = '14. Exchange Online' },
+    @{ Id = 'defender';     Title = '15. Defender and Email Protection' },
+    @{ Id = 'teams';        Title = '16. Microsoft Teams' },
+    @{ Id = 'sharepoint';   Title = '17. SharePoint and OneDrive' }
 )
 $SectionAnchors = @{ 'Authentication Methods' = 'authmethods'; 'Conditional Access' = 'ca'; 'Users' = 'users'; 'Managed Devices' = 'devices'; 'MDM Compliance Policies' = 'mdm'; 'Intune Policies' = 'profiles'; 'Exchange Online' = 'exchange'; 'Enterprise Applications' = 'apps'; 'Privileged Users' = 'roles' }
 $SectionAnchors['Tenant Overview'] = 'overview'; $SectionAnchors['Executive Summary'] = 'overview'; $SectionAnchors['Remediation Plan'] = 'remediation'; $SectionAnchors['Secure Score'] = 'overview'; $SectionAnchors['Privileged Users'] = 'roles'; $SectionAnchors['Exchange Online'] = 'exchange'; $SectionAnchors['Defender'] = 'defender'; $SectionAnchors['Enterprise Applications'] = 'apps'
+$SectionAnchors['Indications of Compromise'] = 'ioc'; $SectionAnchors['Teams'] = 'teams'; $SectionAnchors['SharePoint'] = 'sharepoint'
 # ---- Directory synchronization (Entra Connect) for the overview
 $syncEnabled = [bool]$org.onPremisesSyncEnabled
 $syncLast    = $org.onPremisesLastSyncDateTime
@@ -1784,6 +2312,7 @@ if ($null -ne $scoreCurrent -and $scoreCurrent -lt $scoreTarget) { $tenantIssues
 
 # ---- Flag configuration issues on rows and key/value tables (rendered as clickable (i) icons)
 $SummaryIssueMap = @{
+    'Indications of compromise to review' = 'ioc-review'; 'Teams guest and external access' = 'groups-guests-open'; 'SharePoint and OneDrive external sharing' = 'spo-external-sharing'
     'MFA enforced for sign-in' = 'mfa-not-enforced'; 'MFA registered by all users' = 'mfa-not-registered'; 'Legacy authentication protocols disabled' = 'legacy-auth'
     'Conditional Access restricts access to Entra joined or compliant devices' = 'device-ca'; 'Intune deployed to Windows computers' = 'intune-coverage'
     'Intune compliance policies' = 'compliance-none'; 'Intune configuration and security policies' = 'config-none'; 'Temporary Access Pass (TAP) implemented' = 'tap-disabled'
@@ -1859,7 +2388,7 @@ if ($staleDeviceCount -gt 0) { $deviceStatIssues["Stale devices (no activity in 
 
 # ---- Executive summary figures
 $controlsRated = @($script:summaryRows | Where-Object { [string]$_.Status -notmatch '^(Not available|Not collected)' })
-$controlsMet   = @($controlsRated | Where-Object { [string]$_.Status -match '^(Enabled|Enforced|Blocked|Yes|All enrolled|Restricted|Target met)' })
+$controlsMet   = @($controlsRated | Where-Object { [string]$_.Status -match '^(Enabled|Enforced|Blocked|Yes|All enrolled|Restricted|Target met|None found)' })
 $findCritHigh  = @($remediationSorted | Where-Object { $_.Priority -in @('Critical', 'High') }).Count
 $findMedium    = @($remediationSorted | Where-Object { $_.Priority -eq 'Medium' }).Count
 $enabledMemberCount = @($users | Where-Object { $_.accountEnabled -and $_.userType -eq 'Member' }).Count
@@ -1872,6 +2401,7 @@ if ($null -ne $scoreCurrent) { Add-Kpi "$scorePct%" "Secure Score: $scoreCurrent
 Add-Kpi "$($controlsMet.Count) of $($controlsRated.Count)" 'Security controls met' $(if ($controlsMet.Count -eq $controlsRated.Count) { 'good' } elseif ($controlsMet.Count * 2 -ge $controlsRated.Count) { 'mid' } else { 'bad' })
 Add-Kpi $findCritHigh 'Critical and High findings' $(if ($findCritHigh -eq 0) { 'good' } else { 'bad' })
 Add-Kpi $findMedium 'Medium findings' $(if ($findMedium -eq 0) { 'good' } else { 'mid' })
+Add-Kpi $(if ($iocCollected) { "$iocUrgentCount / $iocReviewCount" } else { 'n/a' }) "Compromise indicators: urgent / to review ($AuditDays days)" $(if (-not $iocCollected) { 'mid' } elseif ($iocUrgentCount) { 'bad' } elseif ($iocReviewCount) { 'mid' } else { 'good' })
 Add-Kpi $enabledMemberCount 'Enabled user accounts' ''
 Add-Kpi $(if ($null -ne $noMfaCount) { $noMfaCount } else { 'n/a' }) 'Users without MFA registered' $(if ($null -eq $noMfaCount) { 'mid' } elseif ($noMfaCount -eq 0) { 'good' } else { 'bad' })
 Add-Kpi $(if ($null -ne $staleUserCount) { $staleUserCount } else { 'n/a' }) "Stale users (no sign-in in $StaleDays days)" $(if ($null -eq $staleUserCount) { 'mid' } elseif ($staleUserCount -eq 0) { 'good' } else { 'mid' })
@@ -1883,6 +2413,7 @@ $execNarrative = "This report was produced on $($ReportDate.ToString('MMMM d, yy
     "It measures $($controlsRated.Count) security controls that regulators and examiners ask about; <b>$($controlsMet.Count) are met</b>. " +
     $(if ($null -ne $scoreCurrent) { "Microsoft Secure Score is <b>$scoreCurrent of $scoreMax points ($scorePct%)</b> against a target of $scoreTarget points ($TargetScorePercent%)$(if ($scoreCompareText) { "; $scoreCompareText" }). " } else { 'Microsoft Secure Score could not be read. ' }) +
     "The remediation plan contains <b>$($remediationSorted.Count) findings</b> ($remediationCounts). " +
+    $(if ($iocCollected) { "Possible indications of compromise in the last $AuditDays days: <b>$iocUrgentCount urgent</b> and $iocReviewCount to review (section 4). " } else { '' }) +
     $(if ($enabledMemberCount) { "There are $enabledMemberCount enabled user accounts$(if ($null -ne $noMfaCount) { ", $noMfaCount without MFA registered" })$(if ($null -ne $staleUserCount) { ", $staleUserCount with no sign-in in $StaleDays days" }), $gaCount Global Administrator account(s), and $($allDeviceRows.Count) devices, of which $notInIntuneCount enabled device(s) are not managed by Intune." } else { '' })
 
 # ----------------------------------------------------------------------------------------------
@@ -1904,12 +2435,14 @@ $snapshot = [ordered]@{
     Controls = $controlMap
     Users = [ordered]@{ Enabled = $enabledMemberCount; NoMfa = $noMfaCount; Stale = $staleUserCount; GlobalAdmins = $gaCount }
     Devices = [ordered]@{ Total = $allDeviceRows.Count; NotInIntune = $notInIntuneCount; Stale = $staleDeviceCount }
+    Ioc = [ordered]@{ Urgent = $(if ($iocCollected) { $iocUrgentCount } else { $null }); Review = $(if ($iocCollected) { $iocReviewCount } else { $null }) }
+    Sharing = [ordered]@{ TeamsWithGuests = $(if (Get-GraphFailure 'teams') { $null } else { $teamsWithGuests }); ExternalShares = $(if ($spoActivity.Count -or $odActivity.Count) { $extShareTotal } else { $null }); Guests = @($users | Where-Object { $_.userType -eq 'Guest' }).Count }
 }
 $previous = if ($history.Count) { $history[-1] } else { $null }
 function Get-StatusRank { param([string]$s)
-    if ($s -match '^(Enabled|Enforced|Blocked|Yes|All enrolled|Restricted|Target met|Complete|Configured|Onboarded)') { return 2 }
+    if ($s -match '^(Enabled|Enforced|Blocked|Yes|All enrolled|Restricted|Target met|Complete|Configured|Onboarded|None found)') { return 2 }
     if ($s -match '^(Not available|Not collected)') { return -1 }
-    if ($s -match '^(Partial|Allowed|All users allowed|No Windows|EOP only|No email domains|No devices onboarded|Not licensed|\d+ (assignments|policies))') { return 1 }
+    if ($s -match '^(Partial|Allowed|All users allowed|No Windows|EOP only|No email domains|No devices onboarded|Not licensed|Guests present|\d+ to review|\d+ (assignments|policies))') { return 1 }
     return 0
 }
 function Get-JsonProp { param($obj, [string]$name) if ($null -eq $obj) { return $null } ; $p = $obj.PSObject.Properties[$name]; if ($p) { return $p.Value } ; return $null }
@@ -1940,7 +2473,12 @@ if ($previous) {
         @{ Area = 'Users'; Label = "Stale users ($StaleDays days)"; Before = (Get-JsonProp $prevUsers 'Stale'); After = $staleUserCount },
         @{ Area = 'Users'; Label = 'Global Administrators'; Before = (Get-JsonProp $prevUsers 'GlobalAdmins'); After = $gaCount },
         @{ Area = 'Devices'; Label = 'Enabled devices not in Intune'; Before = (Get-JsonProp $prevDevices 'NotInIntune'); After = $notInIntuneCount },
-        @{ Area = 'Devices'; Label = "Stale devices ($StaleDays days)"; Before = (Get-JsonProp $prevDevices 'Stale'); After = $staleDeviceCount }
+        @{ Area = 'Devices'; Label = "Stale devices ($StaleDays days)"; Before = (Get-JsonProp $prevDevices 'Stale'); After = $staleDeviceCount },
+        @{ Area = 'Compromise indicators'; Label = 'Urgent indicators'; Before = (Get-JsonProp (Get-JsonProp $previous 'Ioc') 'Urgent'); After = $(if ($iocCollected) { $iocUrgentCount } else { $null }) },
+        @{ Area = 'Compromise indicators'; Label = 'Indicators to review'; Before = (Get-JsonProp (Get-JsonProp $previous 'Ioc') 'Review'); After = $(if ($iocCollected) { $iocReviewCount } else { $null }) },
+        @{ Area = 'Sharing'; Label = 'Teams with guests'; Before = (Get-JsonProp (Get-JsonProp $previous 'Sharing') 'TeamsWithGuests'); After = $(if (Get-GraphFailure 'teams') { $null } else { $teamsWithGuests }) },
+        @{ Area = 'Sharing'; Label = 'Files shared externally (30 days)'; Before = (Get-JsonProp (Get-JsonProp $previous 'Sharing') 'ExternalShares'); After = $(if ($spoActivity.Count -or $odActivity.Count) { $extShareTotal } else { $null }) },
+        @{ Area = 'Sharing'; Label = 'Guest accounts'; Before = (Get-JsonProp (Get-JsonProp $previous 'Sharing') 'Guests'); After = @($users | Where-Object { $_.userType -eq 'Guest' }).Count }
     )
     foreach ($k in $countChecks) {
         if ($null -ne $k.Before -and $null -ne $k.After -and [int]$k.Before -ne [int]$k.After) {
@@ -2011,13 +2549,28 @@ $progressHtml = if ($previous) {
     $(if ($changeRows.Count) { New-HtmlTable $changeRows -Columns 'Area','Change','Before','After','Direction' } else { "<p class='empty'>No measured control, finding or headline count changed since the previous report.</p>" })
 } else { "<p class='meta'>This is the first report kept for this tenant. From the second run onward this section lists every control, finding and headline count that changed, and the charts show the trend. The history (headline figures only, no names) is stored next to the report in <b>$(HtmlEnc $historyName) - history.json</b>; keep it with the reports.</p>" }
 
+function Get-PortalLabel {
+    # Name the admin center a link opens, so the reader knows where the setting lives (not everything is in the Defender portal).
+    param([string]$Url)
+    switch -Regex ($Url) {
+        'security\.microsoft\.com'                       { return 'Open in Defender portal' }
+        'entra\.microsoft\.com|aad\.portal|portal\.azure' { return 'Open in Entra admin center' }
+        'intune\.microsoft\.com|endpoint\.microsoft\.com' { return 'Open in Intune admin center' }
+        'admin\.exchange\.microsoft\.com'                { return 'Open in Exchange admin center' }
+        'admin\.teams\.microsoft\.com'                   { return 'Open in Teams admin center' }
+        'sharepoint'                                       { return 'Open in SharePoint admin center' }
+        'compliance\.microsoft\.com|purview'              { return 'Open in Purview' }
+        'admin\.microsoft\.com'                           { return 'Open in Microsoft 365 admin center' }
+        default                                            { return 'Open setting' }
+    }
+}
 $remHtml = New-Object System.Text.StringBuilder
 [void]$remHtml.Append("<table class='grid' id='remTable'><thead><tr><th style='width:3%'>#</th><th style='width:6%'>Ref</th><th style='width:7%'>Priority</th><th style='width:15%'>Finding</th><th style='width:18%'>Current state</th><th>Recommended action</th><th style='width:6%'>Secure Score points</th><th style='width:11%'>Impact / effort</th><th style='width:7%'>Detail</th><th style='width:7%'>Ticket</th></tr></thead><tbody>")
 $remIdx = 0
 foreach ($item in $remediationSorted) {
     $remIdx++
     $cls = switch ($item.Priority) { 'Critical' { 'warn' } 'High' { 'warn' } 'Medium' { 'mid' } default { '' } }
-    $detail = if ($item.Url) { "<a href='$(HtmlEnc $item.Url)' target='_blank' rel='noopener'>Open in Defender</a>" } elseif ($SectionAnchors[$item.Section]) { "<a href='#$($SectionAnchors[$item.Section])'>$(HtmlEnc $item.Section)</a>" } else { HtmlEnc $item.Section }
+    $detail = if ($item.Url) { "<a href='$(HtmlEnc $item.Url)' target='_blank' rel='noopener'>$(Get-PortalLabel $item.Url)</a>" } elseif ($SectionAnchors[$item.Section]) { "<a href='#$($SectionAnchors[$item.Section])'>$(HtmlEnc $item.Section)</a>" } else { HtmlEnc $item.Section }
     [void]$remHtml.Append("<tr data-tags='$($item.Priority.ToLower())'><td>$remIdx</td><td class='ref'>$(HtmlEnc $item.Ref)</td><td class='$cls'>$(HtmlEnc $item.Priority)</td><td><b>$(HtmlEnc $item.Finding)</b></td><td>$(HtmlEnc $item.State)</td><td>$(HtmlEnc $item.Action)</td><td>$(if ($null -ne $item.Points) { HtmlEnc $item.Points })</td><td>$(HtmlEnc $item.Impact)</td><td>$detail</td><td><button type='button' class='tk' data-i='$($remIdx - 1)' title='Copy this finding as ticket text for your IT provider or MSP'>Copy ticket</button></td></tr>")
 }
 [void]$remHtml.Append('</tbody></table>')
@@ -2038,15 +2591,15 @@ $ticketJson = if ($ticketRows.Count) { (ConvertTo-Json -InputObject $ticketRows 
 $ticketMeta = ConvertTo-Json -InputObject ([pscustomobject]@{ Client = $ClientLabel; Date = $ReportDate.ToString('yyyy-MM-dd'); Version = $ScriptVersion; File = $ticketCsvName }) -Compress
 $ticketBar = if ($remIdx) {
     "<div class='filters' data-table='remTable'><button class='on' data-tag='all'>All</button><button data-tag='critical'>Critical</button><button data-tag='high'>High</button><button data-tag='medium'>Medium</button><button data-tag='low'>Low</button><input type='search' placeholder='Search findings'><span class='n'></span></div>" +
-    "<div class='ticketbar'><button type='button' id='tkCsv'>Download tickets (CSV)</button><button type='button' id='tkAll'>Copy all tickets</button><span class='hint'>Each finding has a stable reference (AH-xxxxxx) that stays the same from report to report. Use <b>Copy ticket</b> on a row, <b>Copy all tickets</b>, or the CSV to hand findings to your IT provider or MSP as work items; the next report's <a href='#progress'>Progress since last report</a> shows which were resolved. The same CSV is saved next to this report as <i>$(HtmlEnc $ticketCsvName)</i>.</span></div>"
+    "<div class='ticketbar'><button type='button' id='tkCsv'>Download tickets (CSV)</button><button type='button' id='tkAll'>Copy all tickets</button><span class='hint'>Each finding has a stable reference (AH-xxxxxx) that stays the same from report to report. Use <b>Copy ticket</b> on a row, <b>Copy all tickets</b>, or the CSV to hand findings to your IT provider or MSP as work items; the next report's <a href='#progress'>Progress since last report</a> shows which were resolved. The same CSV is saved next to this report: <a href='$(HtmlEnc ([uri]::EscapeDataString($ticketCsvName)))'>$(HtmlEnc $ticketCsvName)</a>.</span></div>"
 } else { '' }
 $summaryTable = New-Object System.Text.StringBuilder
 [void]$summaryTable.Append("<table class='grid'><thead><tr><th style='width:26%'>Control</th><th style='width:14%'>Status</th><th>Evidence</th><th style='width:12%'>Detail</th></tr></thead><tbody>")
 foreach ($row in $script:summaryRows) {
     $cls = switch -Regex ([string]$row.Status) {
-        '^(Enabled|Enforced|Blocked|Yes|All enrolled|Restricted|Target met|Complete|Configured|Onboarded)' { 'good'; break }
-        '^(Partial|Allowed|All users allowed|Not available|Not collected|No Windows|EOP only|No email domains|No devices onboarded|Not licensed)' { 'mid'; break }
-        '^(Disabled|Not enforced|Not blocked|No$|Not deployed|None|Active external|Allowed by policy|Below target|Missing|Licensed, not configured|Attention needed)' { 'warn'; break }
+        '^(Enabled|Enforced|Blocked|Yes|All enrolled|Restricted|Target met|Complete|Configured|Onboarded|None found)' { 'good'; break }
+        '^(Partial|Allowed|All users allowed|Not available|Not collected|No Windows|EOP only|No email domains|No devices onboarded|Not licensed|Guests present|\d+ to review)' { 'mid'; break }
+        '^(Disabled|Not enforced|Not blocked|No$|Not deployed|None|Active external|Allowed by policy|Below target|Missing|Licensed, not configured|Attention needed|\d+ urgent|Anyone links)' { 'warn'; break }
         default { '' }
     }
     $anchor = $SectionAnchors[$row.Section]
@@ -2060,6 +2613,9 @@ foreach ($row in $script:summaryRows) {
             $iid = $SummaryIssueMap[$row.Control]
             if ($row.Control -like 'Email protection*' -and $st -like 'Licensed*') { $iid = 'preset-off' }
             if ($row.Control -like 'Endpoint protection*' -and $st -eq 'Attention needed') { $iid = 'mde-high-risk' }
+            if ($row.Control -like 'Indications of compromise*' -and $st -match 'urgent') { $iid = 'ioc-urgent' }
+            if ($row.Control -like 'SharePoint and OneDrive*' -and $st -like 'Anyone links*') { $iid = 'spo-anyone-links' }
+            if ($row.Control -like 'Teams guest*' -and $st -like 'Guests present*') { $iid = 'teams-guests' }
             if ($row.Control -like 'Endpoint protection*' -and $st -eq 'No devices onboarded') { $iid = 'mde-not-onboarded' }
             $sumIcon = New-InfoIcon $iid
         }
@@ -2090,14 +2646,14 @@ foreach ($grp in $policyGroups) {
 }
 
 $mdmSection = @"
-<section id='mdm'><h2>4. MDM Compliance Policies</h2>
+<section id='mdm'><h2>5. MDM Compliance Policies</h2>
 <p class='meta'>Source: Microsoft Graph deviceManagement/deviceCompliancePolicies, exported $($ReportDate.ToString('yyyy-MM-dd HH:mm')). Values are read directly from the tenant configuration.</p>
 $complianceHtmlText
 </section>
 "@
 
 $caSection = @"
-<section id='ca'><h2>7. Conditional Access</h2>
+<section id='ca'><h2>8. Conditional Access</h2>
 <p class='meta'>Source: Microsoft Graph identity/conditionalAccess/policies, exported $($ReportDate.ToString('yyyy-MM-dd HH:mm')). Enabled policies: $($enabledCa.Count); report-only: $($reportOnlyCa.Count); disabled: $(@($caPolicies).Count - $enabledCa.Count - $reportOnlyCa.Count).</p>
 <h3>Policy summary</h3>
 $(New-HtmlTable $caSummaryRows -Columns 'Policy','State','Created','Modified' -EmptyText 'No Conditional Access policies exist in this tenant.')
@@ -2129,6 +2685,95 @@ $(New-HtmlTable $fwdTransportRows -Columns 'Rule','State','Redirect to','Bcc to'
 $(New-HtmlTable $casRows -Columns 'Mailbox','POP enabled','IMAP enabled','SMTP AUTH','ActiveSync','MAPI' -EmptyText 'No mailbox has POP, IMAP, or a per-mailbox SMTP AUTH override enabled.')
 "@
 }
+
+$iocSectionHtml = @"
+<section id='ioc'><h2>4. Possible Indications of Compromise (last $AuditDays days)</h2>
+<p class='meta'>Nothing in this section is a confirmed incident. Each item is a trace that attackers leave behind in almost every Microsoft 365 compromise, and that legitimate administration also leaves behind. The point is to ask: an executive or security officer takes each line to the person named and gets a yes-that-was-me, or escalates it the same day. Items marked <b>urgent</b> are the patterns most strongly associated with an active intrusion (federation changes, mailbox rules that hide mail, password sprays, legacy sign-ins, users Microsoft flags as at risk); items to <b>review</b> are normal administration that should match a ticket or a known reason. Sources: the Entra directory audit log, the Entra sign-in log (Entra ID P1), Entra ID Protection (P2), application registrations and Exchange Online.</p>
+$(New-KvTable $iocKv -Issues $iocKvIssues)
+$(if ($iocSignInNote) { "<p class='note'>$(HtmlEnc $iocSignInNote)</p>" })
+$(if ($iocRiskNote) { "<p class='note'>$(HtmlEnc $iocRiskNote)</p>" })
+$(if (-not $iocAuditAvailable) { "<p class='note'>Directory audit events could not be read: $(HtmlEnc (Get-GraphFailure 'role assignment audit events'))</p>" })
+<h3>Domain and federation changes</h3>
+$(New-HtmlTable $iocDomainRows -Columns 'Date (local)','Activity','Performed by','Target','Detail','Result' -EmptyText "No domain or federation settings changed in the last $AuditDays days.")
+<h3>Inbox rules that hide, delete or forward mail</h3>
+$(if (-not $exoCollected) { "<p class='empty'>Exchange Online was not collected.</p>" } elseif ($SkipInboxRules) { "<p class='empty'>Inbox rules were not scanned (-SkipInboxRules). Run without the switch to include this check.</p>" } else { New-HtmlTable $suspiciousRuleRows -Id 'tbl-ioc-rules' -Filters @(@{ Label = 'Enabled'; Tag = 'enabled' }, @{ Label = 'Disabled'; Tag = 'disabled' }) -Columns 'Mailbox','Rule','Enabled','Why it is suspicious','Conditions' -EmptyText 'No inbox rule deletes, hides or externally forwards mail.' })
+<h3>Users flagged at risk (Entra ID Protection)</h3>
+$(if ($iocRiskNote) { "<p class='empty'>$(HtmlEnc $iocRiskNote)</p>" } else { (New-HtmlTable $riskyUserRows -Columns 'User','UPN','Risk level','Risk state','Detail','Last updated' -EmptyText 'No users are currently flagged at risk.') + '<h4>Risk detections</h4>' + (New-HtmlTable $riskDetectionRows -Columns 'Detected (local)','User','Detection','Level','State','IP address','Location' -EmptyText "No risk detections in the last $AuditDays days.") })
+<h3>Sign-in analysis (Entra ID P1)</h3>
+$(if (-not $iocSignInsCollected) { "<p class='empty'>$(HtmlEnc $(if ($iocSignInNote) { $iocSignInNote } else { 'Sign-in log not collected.' }))</p>" } else { @"
+<h4>Successful sign-ins by country</h4>
+$(New-HtmlTable $countryRows -Columns 'Country','Successful sign-ins','Distinct users','Share' -EmptyText 'No successful sign-ins in the window.')
+<h4>Users signing in from more than one country</h4>
+$(New-HtmlTable $multiCountryRows -Id 'tbl-ioc-country' -Filters @(@{ Label = 'Admins'; Tag = 'admin' }) -Columns 'User','UPN','Countries','Cities','Last sign-in outside home country','Admin' -EmptyText 'Every user signed in from a single country.')
+<h4>Successful legacy authentication sign-ins</h4>
+$(New-HtmlTable $legacySignInRows -Columns 'User','Protocol / client','Successful sign-ins','Applications','Countries','Last' -EmptyText 'No successful legacy authentication sign-ins.')
+<h4>MFA denied or failed</h4>
+$(New-HtmlTable $mfaDeniedRows -Columns 'User','Attempts','Distinct IP addresses','Countries','Applications','Last','Admin' -EmptyText 'No MFA denials or failures.')
+<h4>Blocked by Conditional Access (password was accepted)</h4>
+$(New-HtmlTable $caBlockedRows -Columns 'User','Attempts','Distinct IP addresses','Countries','Applications','Last','Admin' -EmptyText 'No sign-ins were blocked by Conditional Access.')
+<h4>Possible password spray sources</h4>
+$(New-HtmlTable $sprayRows -Columns 'Source IP address','Country','Failed passwords','Distinct accounts targeted','Accounts (sample)','Last attempt' -EmptyText 'No source address failed passwords against three or more accounts.')
+<h4>Accounts locked out</h4>
+$(New-HtmlTable $lockoutRows -Columns 'User','Attempts','Distinct IP addresses','Countries','Last','Admin' -EmptyText 'No account lockouts.')
+<h4>Risky sign-ins</h4>
+$(New-HtmlTable $riskySignInRows -Columns 'Date (local)','User','Risk during sign-in','Aggregated risk','Risk state','Application','IP address','Location' -EmptyText 'No risky successful sign-ins (risk levels need Entra ID P2 to be shown).')
+"@ })
+<h3>Privileged role assignments added</h3>
+$(New-HtmlTable $iocRoleRows -Columns 'Date (local)','Activity','Performed by','Target','Detail','Result' -EmptyText "No privileged role assignments were added in the last $AuditDays days.")
+<h3>Security info (MFA methods) registered or changed</h3>
+$(New-HtmlTable $iocMfaRows -Id 'tbl-ioc-mfa' -Filters $IocAuditFilters -Columns 'Date (local)','Activity','Performed by','Target','Detail','Result' -EmptyText "No MFA methods were registered or changed in the last $AuditDays days.")
+<h3>Password resets and changes</h3>
+$(New-HtmlTable $iocPwRows -Id 'tbl-ioc-pw' -Filters $IocAuditFilters -Columns 'Date (local)','Activity','Performed by','Target','Result' -EmptyText "No password resets or changes in the last $AuditDays days.")
+<h3>Conditional Access and security policy changes</h3>
+$(New-HtmlTable $iocCaRows -Columns 'Date (local)','Activity','Performed by','Target','Detail','Result' -EmptyText "No Conditional Access, named location or security policy changes in the last $AuditDays days.")
+<h3>Application credentials, owners and new app registrations</h3>
+$(New-HtmlTable $iocAppRows -Columns 'Date (local)','Activity','Performed by','Target','Detail','Result' -EmptyText "No application credential or ownership changes in the audit log for the last $AuditDays days.")
+<h4>Secrets and certificates added to app registrations</h4>
+$(New-HtmlTable $iocNewCredRows -Columns 'Application','Credential','Name','Valid from','Expires' -EmptyText "No app registration received a new secret or certificate in the last $AuditDays days.")
+<h4>Enterprise applications added</h4>
+$(New-HtmlTable $iocNewAppRows -Columns 'Application','Publisher','Added','Delegated permissions','Application permissions' -EmptyText "No enterprise applications were added in the last $AuditDays days.")
+<h3>Accounts created, enabled, deleted or invited</h3>
+$(New-HtmlTable $iocNewUserRows -Id 'tbl-ioc-users' -Filters @(@{ Label = 'Guests'; Tag = 'guest' }, @{ Label = 'Members'; Tag = 'member' }) -Columns 'User','UPN','Type','Enabled','Created','Licensed','Admin' -EmptyText "No accounts were created in the last $AuditDays days.")
+$(if ($iocUserRows.Count) { '<h4>Account lifecycle audit events</h4>' + (New-HtmlTable $iocUserRows -Columns 'Date (local)','Activity','Performed by','Target','Result') })
+<h3>Mailbox delegation and mail flow (Exchange Online)</h3>
+$(if (-not $exoCollected) { "<p class='empty'>Exchange Online was not collected.</p>" } else { @"
+<h4>Full Access delegates</h4>
+$(if ($SkipInboxRules) { "<p class='empty'>Mailbox permissions were not scanned (-SkipInboxRules).</p>" } else { New-HtmlTable $fullAccessRows -Id 'tbl-ioc-delegates' -Filters @(@{ Label = 'User mailboxes'; Tag = 'user' }, @{ Label = 'Shared mailboxes'; Tag = 'shared' }) -Columns 'Mailbox','Mailbox type','Delegate (Full Access)','Rights' -EmptyText 'No non-owner Full Access delegates.' })
+<h4>Send As grants</h4>
+$(New-HtmlTable $sendAsRows -Columns 'Mailbox','Trustee (can send as)' -EmptyText 'No Send As grants to other accounts.')
+<h4>Mail flow rules changed in the last $AuditDays days</h4>
+$(New-HtmlTable $recentTransportRows -Columns 'Rule','State','Changed','Created','Actions' -EmptyText "No transport rules were created or changed in the last $AuditDays days.")
+"@ })
+</section>
+"@
+
+$teamsSectionHtml = @"
+<section id='teams'><h2>16. Microsoft Teams</h2>
+<p class='meta'>Every team in the tenant with its visibility, owners, members and guests, the activity reported by Microsoft for the last 90 days, and the tenant-wide settings that decide who outside the institution can reach staff through Teams. Teams are Microsoft 365 groups: each one also owns a SharePoint site (section 17) that inherits the team's membership and guests.</p>
+$(New-KvTable $teamsKv -Issues $teamsKvIssues)
+<h3>Tenant-wide Teams policies</h3>
+$(New-KvTable $teamsPolicyKv -Issues $teamsPolicyIssues)
+<h3>Teams</h3>
+$(if ($reportConcealedNote -and $teamsConcealed) { "<p class='note'>$(HtmlEnc $reportConcealedNote)</p>" })
+$(if (@($teamGroups).Count -gt $teamLimit) { "<p class='note'>Only the first $teamLimit teams (alphabetically) were expanded for owners, members and guests.</p>" })
+$(New-HtmlTable $teamRows -Id 'tbl-teams' -Filters $TeamFilters -Columns 'Team','Visibility','Archived','Owners','Members','Guests','Guest names','Last activity','Active users (90 days)','Members may add apps / connectors','Guests may create channels','Created','Classification' -EmptyText $(if (Get-GraphFailure 'teams') { "Teams could not be read: $(Get-GraphFailure 'teams')" } else { 'No teams exist in this tenant.' }))
+</section>
+"@
+
+$spoSectionHtml = @"
+<section id='sharepoint'><h2>17. SharePoint and OneDrive</h2>
+<p class='meta'>Tenant-wide sharing and access settings for SharePoint and OneDrive, every site with its owner, activity and storage, every OneDrive with the state of its owner's account, and the users who shared files outside the organization in the last 30 days. Site and OneDrive inventories come from the Microsoft 365 usage reports (90-day period), which may lag by up to 48 hours.</p>
+$(New-KvTable $spoKv -Issues $spoKvIssues)
+$(if ($reportConcealedNote) { "<p class='note'>$(HtmlEnc $reportConcealedNote)</p>" })
+<h3>Users who shared files externally (last 30 days)</h3>
+$(New-HtmlTable $extShareRows -Columns 'User','UPN','Files shared externally from SharePoint (30 days)','Files shared externally from OneDrive (30 days)','Files shared internally (30 days)' -EmptyText $(if ($spoActivity.Count -or $odActivity.Count) { 'No user shared a file externally in the last 30 days.' } else { "Activity reports not available$(if (Get-GraphFailure 'SharePoint user activity report') { ": $(Get-GraphFailure 'SharePoint user activity report')" })." }))
+<h3>SharePoint sites</h3>
+$(New-HtmlTable $siteRows -Id 'tbl-sites' -Filters $SiteFilters -Columns 'Site','Type','Owner','Last activity','Files','Active files (90 days)','Storage used (GB)','Page views (90 days)','Deleted' -EmptyText $(if ($siteReport.Count) { 'No sites returned.' } else { "Site usage report not available$(if (Get-GraphFailure 'SharePoint site usage report') { ": $(Get-GraphFailure 'SharePoint site usage report')" })." }))
+<h3>OneDrive accounts</h3>
+$(New-HtmlTable $odRows -Id 'tbl-onedrive' -Filters $OdFilters -Columns 'Owner','Account','Last activity','Files','Active files (90 days)','Storage used (GB)','Deleted' -EmptyText $(if ($odReport.Count) { 'No OneDrive accounts returned.' } else { "OneDrive usage report not available$(if (Get-GraphFailure 'OneDrive usage report') { ": $(Get-GraphFailure 'OneDrive usage report')" })." }))
+</section>
+"@
+
 
 $html = @"
 <!DOCTYPE html>
@@ -2165,9 +2810,10 @@ $ticketBar
 $($remHtml.ToString())
 <script type='application/json' id='tkData'>$ticketJson</script><script type='application/json' id='tkMeta'>$ticketMeta</script>
 </section>
+$iocSectionHtml
 $mdmSection
 
-<section id='profiles'><h2>5. Intune Policies</h2>
+<section id='profiles'><h2>6. Intune Policies</h2>
 <p class='meta'>Configuration profiles, settings catalog policies, and endpoint security policies with the settings configured in each. Compliance policies are in section 4.</p>
 <h3>Policy inventory</h3>
 $(New-HtmlTable $profileRows -Columns 'Policy','Kind','Platform','Type','Last modified','Included','Excluded' -EmptyText $(if (Get-GraphFailure 'device configuration profiles') { "Intune policies could not be read: $(Get-GraphFailure 'device configuration profiles')" } else { 'No configuration profiles, settings catalog policies, or endpoint security policies exist in this tenant.' }))
@@ -2179,7 +2825,7 @@ $(New-HtmlTable $mamRows -Columns 'App protection policy','Platform','Assigned',
 $($profileDetailHtml.ToString())
 </section>
 
-<section id='devices'><h2>6. Managed Devices</h2>
+<section id='devices'><h2>7. Managed Devices</h2>
 $(New-KvTable $deviceStats -Issues $deviceStatIssues)
 <h3>Device list</h3>
 <p class='meta'>Every device object in Entra ID joined with its Intune record, plus Intune devices that have no Entra object. "Stale" means no sign-in or Intune sync in $StaleDays days. "Last user" is the most recent account Intune saw log on; "Owner / primary user" is the registered owner.</p>
@@ -2188,7 +2834,7 @@ $(New-HtmlTable $allDeviceRows -Id 'tbl-devices' -Filters $DeviceFilters -EmptyT
 
 $caSection
 
-<section id='authmethods'><h2>8. Authentication Methods</h2>
+<section id='authmethods'><h2>9. Authentication Methods</h2>
 <h3>Security defaults</h3>
 $(New-KvTable ([ordered]@{ 'Security defaults' = $(if ($null -ne $secDefaults.isEnabled) { $(if ($secDefaults.isEnabled) { 'Enabled' } else { 'Disabled' }) } else { 'Could not read' }) }) -Issues $secDefIssues)
 <h3>Temporary Access Pass</h3>
@@ -2199,7 +2845,7 @@ $(New-HtmlTable $authMethodRows -Columns 'Method','State','Included targets','Ex
 $(New-KvTable $devRegKv -Issues $devRegIssues)
 </section>
 
-<section id='apps'><h2>9. Enterprise Applications</h2>
+<section id='apps'><h2>10. Enterprise Applications</h2>
 <h3>Application governance settings</h3>
 $(New-KvTable $appGovKv -Issues $appGovIssues)
 <p class='note'>Approver and approval date come from the Entra directory audit log, which retains $AuditDays days in this export (30 days with Entra ID P1/P2, 7 days on Free). Applications consented before that window show the date they were added to the tenant and "Not in audit log retention" for the approver.</p>
@@ -2207,11 +2853,11 @@ $(New-KvTable $appGovKv -Issues $appGovIssues)
 $(New-HtmlTable $appRows -EmptyText 'No enterprise applications returned.')
 </section>
 
-<section id='consent'><h2>10. Application Consent Audit Events (last $AuditDays days)</h2>
+<section id='consent'><h2>11. Application Consent Audit Events (last $AuditDays days)</h2>
 $(New-HtmlTable $auditRows -Columns 'Date (local)','Activity','Performed by','Application','Admin consent','Result' -EmptyText "No application consent or add events were recorded in the last $AuditDays days.")
 </section>
 
-<section id='users'><h2>11. Users</h2>
+<section id='users'><h2>12. Users</h2>
 $(New-KvTable $userStats -Issues $userStatIssues)
 <h3>Enabled member accounts without MFA registered</h3>
 $(if (@($regDetails).Count) { New-HtmlTable $noMfaRows -Columns 'User','UPN','Licensed','Last sign-in','Methods registered' -EmptyText 'Every enabled member account has an MFA method registered.' } else { "<p class='empty'>MFA registration report not available (requires Entra ID P1).</p>" })
@@ -2219,14 +2865,14 @@ $(if (@($regDetails).Count) { New-HtmlTable $noMfaRows -Columns 'User','UPN','Li
 $(New-HtmlTable $userRows -Id 'tbl-users' -Filters $UserFilters -EmptyText 'No users returned.')
 </section>
 
-<section id='roles'><h2>12. Privileged Users</h2>
+<section id='roles'><h2>13. Privileged Users</h2>
 <p class='meta'>Active directory role assignments, grouped by role. Roles with no members are omitted. Groups assigned to a role are shown as a group row; their members are not expanded.</p>
 $(New-KvTable $privStats)
 $($privHtml.ToString())
 $(if (@($activeRoles).Count -eq 0) { "<p class='empty'>No directory roles have active members.</p>" })
 </section>
 
-<section id='exchange'><h2>13. Exchange Online</h2>
+<section id='exchange'><h2>14. Exchange Online</h2>
 <p class='meta'>Automatic forwarding and legacy protocol settings from Exchange Online PowerShell.</p>
 $(New-KvTable $exoKv -Issues $exoIssues)
 $exoDetailHtml
@@ -2235,7 +2881,7 @@ $exoDetailHtml
 $(if (-not $dnsAvailable) { "<p class='empty'>DNS lookups are not available on this computer (Resolve-DnsName missing).</p>" } else { New-HtmlTable $emailAuthRows -Columns 'Domain','MX','SPF','SPF record','DKIM signing (Exchange)','DKIM DNS (selector1 / selector2)','DMARC policy','DMARC coverage','DMARC reporting (rua)','DMARC record' -EmptyText 'No email-enabled custom domains are verified in this tenant.' })
 </section>
 
-<section id='defender'><h2>14. Defender and Email Protection</h2>
+<section id='defender'><h2>15. Defender and Email Protection</h2>
 <p class='meta'>Exchange Online Protection and Microsoft Defender for Office 365 policies (anti-spam, anti-malware, anti-phishing, Safe Links, Safe Attachments, preset security policies) and Microsoft Defender for Endpoint device status.</p>
 $(New-KvTable ([ordered]@{
     'Defender for Office 365 licence'      = $(if ($script:HasDefenderP2) { 'Plan 2' } elseif ($script:HasDefenderP1) { 'Plan 1' } else { 'Not licensed: Exchange Online Protection only' })
@@ -2262,6 +2908,8 @@ $(if ($script:HasDefenderP1) { New-HtmlTable $safeAttachRows -Columns 'Policy','
 <h3>Defender for Endpoint devices</h3>
 $(if ($mdeCollected) { (New-KvTable $mdeKv) + (New-HtmlTable $mdeRows -Id 'tbl-mde' -Filters $MdeFilters -EmptyText 'No devices are onboarded to Defender for Endpoint.') } else { "<p class='empty'>$(HtmlEnc $mdeEvidence)</p>" })
 </section>
+$teamsSectionHtml
+$spoSectionHtml
 <footer class='brand'>$(if ($logoImg) { "<a href='https://audithat.com' target='_blank' rel='noopener'>$logoImg</a>" })<div>Microsoft 365 Audit Evidence for $(HtmlEnc $ClientLabel), generated $($ReportDate.ToString('MMMM d, yyyy HH:mm')) by $(HtmlEnc $ctx.Account).<br>Produced locally by the free, read-only Audit Hat M365 Audit Evidence script, version $ScriptVersion (<a href='$RepoUrl' target='_blank' rel='noopener'>source and updates on GitHub</a>). Provided by $brandLink. No data left your organization.<br>Running on-premises Active Directory as well? The companion <a href='$AdRepoUrl' target='_blank' rel='noopener'>AuditHat AD Governance Report</a> covers it the same way.</div></footer>
 <script>
 (function(){
@@ -2330,6 +2978,7 @@ if ($ticketRows.Count) {
         Export-Csv -Path $ticketCsvPath -NoTypeInformation -Encoding UTF8
     Write-Host "Remediation tickets (CSV): $ticketCsvPath" -ForegroundColor Green
 }
+if (-not $NoOpen) { try { Start-Process -FilePath $reportPath -ErrorAction Stop } catch { Write-Verbose "Could not open the report automatically: $($_.Exception.Message)" } }
 
 # ----------------------------------------------------------------------------------------------
 # Optional Word documents (requires Microsoft Word installed on this machine)

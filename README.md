@@ -10,11 +10,13 @@ steering committee, the board, examiners and auditors the information they need,
 from one read-only run.
 
 One read-only PowerShell script signs in to Microsoft 365 with your own admin account, collects the
-Entra ID, Intune, Conditional Access, application, user, privileged-role, Exchange Online and
-Defender evidence an IT auditor or examiner asks for, and writes a single self-contained HTML
-report: an executive summary with KPI tiles, a prioritized remediation plan, Microsoft Secure Score
-against a target, and the detailed evidence behind every number, with a clickable **i** icon on each
-configuration issue explaining why it matters and how to fix it. Optionally it also produces two Word
+Entra ID, Intune, Conditional Access, application, user, privileged-role, Exchange Online, Defender,
+Teams and SharePoint/OneDrive evidence an IT auditor or examiner asks for, and writes a single
+self-contained HTML report: an executive summary with KPI tiles, a prioritized remediation plan that
+doubles as a ticket list for your IT provider, a **Possible Indications of Compromise** section
+(what to research today), Microsoft Secure Score against a target, and the detailed evidence behind
+every number, with a clickable **i** icon on each configuration issue explaining why it matters and
+how to fix it. The report opens in your browser when the run finishes. Optionally it also produces two Word
 documents (`MDM Configuration.docx`, `Conditional Access Policies.docx`).
 
 Who it is for:
@@ -99,7 +101,15 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\Get-M365AuditEvidence.ps1 -TenantId contoso.onmicrosoft.com -OutputFolder C:\Audit\Contoso -SkipInboxRules
 ```
 
-Output lands in `.\M365-Audit-Evidence\<Client> - M365 Audit Evidence <date>.html` by default.
+Output lands in `.\M365-Audit-Evidence\<Client> - M365 Audit Evidence <date>.html` by default, next to
+`<Client> - Remediation tickets <date>.csv` and the per-tenant history file. The report opens in
+your default browser when the run completes (`-NoOpen` suppresses that).
+
+**You sign in once.** The browser sign-in is reused for Exchange Online (and, when the module is
+installed, Teams) through the same connector, so there is no second prompt. If the connector has
+not been granted the Exchange permission in your tenant yet, the script warns and falls back to a
+separate Exchange sign-in; a Global Administrator fixes that once with the admin-consent link the
+script prints.
 
 ---
 
@@ -112,7 +122,8 @@ Output lands in `.\M365-Audit-Evidence\<Client> - M365 Audit Evidence <date>.htm
 | 3 | `Microsoft.Graph.Authentication` module | **Auto-installed** for the current user on first run |
 | 4 | `ExchangeOnlineManagement` module | **Auto-installed** for the current user on first run; only needed for the Exchange section |
 | 5 | A Microsoft 365 account | Sign-in opens the normal Microsoft sign-in page in your default browser; approve the Microsoft Authenticator / MFA prompt and you are in. **MFA, Conditional Access and passwordless all work.** `-DeviceCode` is available for remote or locked-down sessions |
-| 6 | Microsoft Word (optional) | Only for `-WordDocs` |
+| 6 | `MicrosoftTeams` module (optional) | Not auto-installed (large). `Install-Module MicrosoftTeams -Scope CurrentUser` adds tenant-wide Teams external access, guest access and meeting policies to section 16 |
+| 7 | Microsoft Word (optional) | Only for `-WordDocs` |
 
 No local admin rights are needed. Modules install with `-Scope CurrentUser`.
 
@@ -121,8 +132,11 @@ No local admin rights are needed. Modules install with `-Scope CurrentUser`.
 - **First run in a tenant:** a **Global Administrator** (or Privileged Role Administrator / Cloud
   Application Administrator). Microsoft Graph will show a one-time consent prompt for the read-only
   permissions below. Accept it.
-- **Every run after that:** **Global Reader** is enough for all Graph sections. The Exchange Online
-  section additionally needs **View-Only Organization Management** or **Exchange Administrator**.
+- **Every run after that:** **Global Reader** is enough for all Graph sections, including the usage
+  reports behind the Teams and SharePoint inventories and the SharePoint tenant settings. The
+  Exchange Online section additionally needs **View-Only Organization Management** or **Exchange
+  Administrator**. Tenant-wide Teams policies (optional) need **Teams Administrator** or Global
+  Reader.
 
 If a permission was not granted, the script warns at sign-in and marks the affected section
 "not available" instead of failing.
@@ -133,18 +147,30 @@ If a permission was not granted, the script warns at sign-in and marks the affec
 `Application.Read.All`, `Policy.Read.All`, `Policy.Read.ConditionalAccess`,
 `Policy.Read.AuthenticationMethod`, `DeviceManagementConfiguration.Read.All`,
 `DeviceManagementManagedDevices.Read.All`, `DeviceManagementApps.Read.All`, `Device.Read.All`,
-`AuditLog.Read.All`, `UserAuthenticationMethod.Read.All`, `RoleManagement.Read.Directory`, `SecurityEvents.Read.All` (Microsoft Secure Score)
+`AuditLog.Read.All`, `UserAuthenticationMethod.Read.All`, `RoleManagement.Read.Directory`, `SecurityEvents.Read.All` (Microsoft Secure Score),
+`IdentityRiskyUser.Read.All` and `IdentityRiskEvent.Read.All` (Entra ID Protection, P2), `Reports.Read.All` (Teams, SharePoint and OneDrive usage reports),
+`SharePointTenantSettings.Read.All` (SharePoint sharing settings), `TeamSettings.Read.All` (per-team settings)
 
-The script never requests a write scope and only runs `Get-*` Exchange cmdlets. Nothing in the
-tenant is changed.
+Beyond Microsoft Graph, the connector also carries two delegated permissions on other Microsoft
+APIs so that one sign-in covers everything: **Office 365 Exchange Online > Exchange.Manage** (the
+only delegated permission Exchange Online PowerShell offers; the signed-in user's Exchange role still
+limits what can be read, and the script only runs `Get-*` cmdlets) and, optionally, **Skype and
+Teams Tenant Admin API > user_impersonation** for the Teams policies. Microsoft Defender for
+Endpoint needs `Machine.Read`, `Software.Read` and `Vulnerability.Read` on the WindowsDefenderATP API.
+
+The script never requests a write scope and only runs `Get-*` cmdlets. Nothing in the tenant is
+changed. **After an upgrade that adds permissions, the first sign-in asks a Global Administrator to
+accept the new read-only permissions once**; a non-admin sees "Need admin approval" until that is
+done, or an admin uses the consent link printed by the script.
 
 ### Register your own app (needed if sign-in fails with AADSTS700016)
 
-By default the script signs in through Microsoft's own public app, **Microsoft Graph Command Line
-Tools** (client ID `14d82eec-204b-4c2f-b7e8-296a70dae67e`), the same app `Connect-MgGraph` uses.
-Some tenants do not have that app and block it from being added, and sign-in then fails with:
+By default the script signs in through the **AuditHat Pulse Reports (PowerShell)** connector
+(client ID `ae173bf3-ba47-4ab8-ac54-3ea92fa6c337`), a multi-tenant public client with delegated
+read-only permissions (see Privacy). Some tenants block adding third-party enterprise applications,
+and sign-in then fails with:
 
-> AADSTS700016: Application with identifier '14d82eec-...' was not found in the directory
+> AADSTS700016: Application with identifier 'ae173bf3-...' was not found in the directory
 
 The fix is a small app registration owned by the tenant. It is a **public client with no secret
 and no certificate**, so there is nothing to protect or rotate, and it only holds the read-only
@@ -166,7 +192,9 @@ delegated permissions listed above. Takes about five minutes as a Global Adminis
    `Application.Read.All`, `Policy.Read.All`, `Policy.Read.ConditionalAccess`,
    `Policy.Read.AuthenticationMethod`, `DeviceManagementConfiguration.Read.All`,
    `DeviceManagementManagedDevices.Read.All`, `DeviceManagementApps.Read.All`, `Device.Read.All`,
-   `AuditLog.Read.All`, `UserAuthenticationMethod.Read.All`, `RoleManagement.Read.Directory`, `SecurityEvents.Read.All` (Microsoft Secure Score)
+   `AuditLog.Read.All`, `UserAuthenticationMethod.Read.All`, `RoleManagement.Read.Directory`, `SecurityEvents.Read.All` (Microsoft Secure Score),
+`IdentityRiskyUser.Read.All` and `IdentityRiskEvent.Read.All` (Entra ID Protection, P2), `Reports.Read.All` (Teams, SharePoint and OneDrive usage reports),
+`SharePointTenantSettings.Read.All` (SharePoint sharing settings), `TeamSettings.Read.All` (per-team settings)
 5. Still on **API permissions**, click **Grant admin consent for \<tenant\>** and confirm. Every
    row should show a green check.
 6. Run the script with both IDs:
@@ -184,8 +212,11 @@ delegated permissions listed above. Takes about five minutes as a Global Adminis
 
    The settings file contains no secrets (public client), so it is safe to keep next to the script.
 
-The Exchange Online section still signs in through Microsoft's own Exchange Online PowerShell app;
-if that is blocked too, run with `-SkipExchange`.
+For single sign-on to Exchange Online, also add **APIs my organization uses > Office 365 Exchange
+Online > Delegated > Exchange.Manage** (and, for Teams policies, **Skype and Teams Tenant Admin API
+> user_impersonation**) and grant admin consent. Without them the Exchange section prompts for a
+second sign-in through Microsoft's own Exchange Online PowerShell app; if that is blocked too, run
+with `-SkipExchange`.
 
 ---
 
@@ -232,17 +263,20 @@ without that person needing to understand PowerShell or Microsoft Graph.
 | 1 | Executive Summary | organization, subscribedSkus, security/secureScores, history file, computed | Narrative paragraph and KPI tiles (Secure Score vs target, controls met, Critical/High and Medium findings, users without MFA, stale users, Global Administrators, devices, devices not in Intune, stale devices), top five priorities, **Progress since last report** (change log of controls, findings and counts versus the previous run, Secure Score trend chart with target line, open findings by priority chart), privacy statement, tenant details with bulleted licensed capabilities, directory synchronization status (Entra Connect, AD domains, sync server), verified domains table, subscriptions |
 | 2 | Security Controls Summary | computed from everything below | One row per control (MFA, legacy auth, device access, Intune, TAP, device join, forwarding, consent, **email authentication**, **email protection**, **endpoint protection**, Secure Score, privileged roles): Status, Evidence, link to detail. Only **enabled** CA policies count as enforced |
 | 3 | Remediation Plan | summary results, secureScoreControlProfiles, directoryRoles, subscribedSkus | Every failed control with a recommended action, privileged-access findings (Global Admins without MFA, too many or a single Global Admin), licensing gaps, and every unimplemented Secure Score action with points available. Sorted Critical, High, Medium, Low, then by points. Each finding carries a stable reference (`AH-xxxxxx`), a **Copy ticket** button, priority filters and a **CSV download**; the same CSV is written next to the report |
-| 4 | MDM Compliance Policies | deviceCompliancePolicies | Intune compliance policies per platform: Basics / Settings / Actions for noncompliance / Assignments |
-| 5 | Intune Policies | deviceConfigurations, configurationPolicies (settings catalog), intents (endpoint security), enrollment configs, app protection | Every Intune policy and the settings behind it |
-| 6 | Managed Devices | managedDevices, devices (+registeredOwners) | Device counts, then one device list joining every Entra ID device with its Intune record: owner, **last user** seen by Intune, last activity, compliance, encryption. Quick filters: Stale (90 days), Not in Intune, Noncompliant, Not encrypted, Personal, Windows, Disabled, plus text search |
-| 7 | Conditional Access | conditionalAccess/policies, namedLocations, authenticationStrength | Full policy detail with IDs resolved to names; filtered tables for MFA, legacy-auth block, device-based policies |
-| 8 | Authentication Methods | security defaults, authenticationMethodsPolicy, deviceRegistrationPolicy | Security defaults, Temporary Access Pass, each method's state, who may join devices |
-| 9 | Enterprise Applications | servicePrincipals, oauth2PermissionGrants, appRoleAssignments, authorizationPolicy | Publisher, admin vs user consent, delegated and application permissions, date added, approver |
-| 10 | Application Consent Audit Events | auditLogs/directoryAudits | Consent / add-app events in the last `-AuditDays` days |
-| 11 | Users | users (signInActivity), userRegistrationDetails, directoryRoles | Counts, enabled members without MFA registered, full user list with last sign-in, licenses, MFA methods, Admin flag and **number of devices**. Quick filters: Stale (90 days, needs P1), No MFA, Admin, Guests, Disabled, Licensed, plus text search |
-| 12 | Privileged Users | directoryRoles, roleEligibilityScheduleInstances | One table per role, Global Administrator first, MFA and last sign-in per member, PIM eligible list |
-| 13 | Exchange Online | ExchangeOnlineManagement cmdlets, public DNS (Resolve-DnsName) | Auto-forwarding (remote domain, outbound spam policy, mailbox, inbox rules, transport rules), POP/IMAP/SMTP AUTH, modern auth, and **email authentication per custom domain: MX, SPF (and its all-mechanism), DKIM signing state plus selector CNAMEs, DMARC policy, coverage and reporting** |
-| 14 | Defender and Email Protection | Get-HostedContentFilterPolicy, Get-MalwareFilterPolicy, Get-AntiPhishPolicy, Get-SafeLinksPolicy, Get-SafeAttachmentPolicy, Get-AtpPolicyForO365, Get-EOPProtectionPolicyRule, Get-ATPProtectionPolicyRule, Defender for Endpoint API | Licence status for Defender for Office 365 and Defender for Endpoint, preset security policies, anti-spam actions and bulk threshold, ZAP, anti-malware common attachments filter, anti-phishing impersonation settings and threshold, Safe Links, Safe Attachments, and Defender for Endpoint device list (sensor health, risk, exposure, last seen) with exposure and configuration scores |
+| 4 | Possible Indications of Compromise | auditLogs/directoryAudits (targeted activities), auditLogs/signIns (P1), identityProtection (P2), applications, Exchange inbox rules, mailbox and recipient permissions, transport rules | What an attacker leaves behind: domain/federation changes, inbox rules that hide, delete or forward mail, risky users, legacy sign-ins, password sprays, MFA denials, Conditional Access blocks, sign-ins from several countries, new role assignments, MFA method changes, admin password resets, policy changes, new app credentials and apps, new accounts and guests, Full Access and Send As grants, transport rule changes, mailbox auditing. Rolled up as *urgent* (investigate today) and *to review* (match to a ticket) |
+| 5 | MDM Compliance Policies | deviceCompliancePolicies | Intune compliance policies per platform: Basics / Settings / Actions for noncompliance / Assignments |
+| 6 | Intune Policies | deviceConfigurations, configurationPolicies (settings catalog), intents (endpoint security), enrollment configs, app protection | Every Intune policy and the settings behind it |
+| 7 | Managed Devices | managedDevices, devices (+registeredOwners) | Device counts, then one device list joining every Entra ID device with its Intune record: owner, **last user** seen by Intune, last activity, compliance, encryption. Quick filters: Stale (90 days), Not in Intune, Noncompliant, Not encrypted, Personal, Windows, Disabled, plus text search |
+| 8 | Conditional Access | conditionalAccess/policies, namedLocations, authenticationStrength | Full policy detail with IDs resolved to names; filtered tables for MFA, legacy-auth block, device-based policies |
+| 9 | Authentication Methods | security defaults, authenticationMethodsPolicy, deviceRegistrationPolicy | Security defaults, Temporary Access Pass, each method's state, who may join devices |
+| 10 | Enterprise Applications | servicePrincipals, oauth2PermissionGrants, appRoleAssignments, authorizationPolicy | Publisher, admin vs user consent, delegated and application permissions, date added, approver |
+| 11 | Application Consent Audit Events | auditLogs/directoryAudits | Consent / add-app events in the last `-AuditDays` days |
+| 12 | Users | users (signInActivity), userRegistrationDetails, directoryRoles | Counts, enabled members without MFA registered, full user list with last sign-in, licenses, MFA methods, Admin flag and **number of devices**. Quick filters: Stale (90 days, needs P1), No MFA, Admin, Guests, Disabled, Licensed, plus text search |
+| 13 | Privileged Users | directoryRoles, roleEligibilityScheduleInstances | One table per role, Global Administrator first, MFA and last sign-in per member, PIM eligible list |
+| 14 | Exchange Online | ExchangeOnlineManagement cmdlets, public DNS (Resolve-DnsName) | Auto-forwarding (remote domain, outbound spam policy, mailbox, inbox rules, transport rules), POP/IMAP/SMTP AUTH, modern auth, and **email authentication per custom domain: MX, SPF (and its all-mechanism), DKIM signing state plus selector CNAMEs, DMARC policy, coverage and reporting** |
+| 15 | Defender and Email Protection | Get-HostedContentFilterPolicy, Get-MalwareFilterPolicy, Get-AntiPhishPolicy, Get-SafeLinksPolicy, Get-SafeAttachmentPolicy, Get-AtpPolicyForO365, Get-EOPProtectionPolicyRule, Get-ATPProtectionPolicyRule, Defender for Endpoint API | Licence status for Defender for Office 365 and Defender for Endpoint, preset security policies, anti-spam actions and bulk threshold, ZAP, anti-malware common attachments filter, anti-phishing impersonation settings and threshold, Safe Links, Safe Attachments, and Defender for Endpoint device list (sensor health, risk, exposure, last seen) with exposure and configuration scores |
+| 16 | Microsoft Teams | groups (Team-provisioned), groups/{id}/owners and members, teams/{id}, groupSettings (Group.Unified), reports/getTeamsTeamActivityDetail, optional Teams PowerShell (federation, client and meeting policy) | Guest and external access posture, every team with visibility, owners, members, guests, archived state and 90-day activity. Filters: Guests, Public, No owner, Single owner, Inactive, Archived |
+| 17 | SharePoint and OneDrive | admin/sharepoint/settings, reports/getSharePointSiteUsageDetail, getOneDriveUsageAccountDetail, getSharePointActivityUserDetail, getOneDriveActivityUserDetail | Tenant sharing level (Anyone links, guests, domain restrictions, re-sharing, legacy auth, unmanaged sync, idle sign-out), users who shared files externally in 30 days, every site (type, owner, activity, storage) and every OneDrive with the owner's account state. Filters on each table |
 
 ### The auditor questions this answers
 
@@ -258,6 +292,9 @@ without that person needing to understand PowerShell or Microsoft Graph.
 10. Is Temporary Access Pass implemented
 11. Is automatic email forwarding outside the tenant allowed or in use
 12. Privileged users by role
+13. Is there any sign the tenant or a mailbox has been compromised (section 4)
+14. Who outside the institution can reach staff or content through Teams, and which teams have guests
+15. How far can documents be shared from SharePoint and OneDrive, and who has been sharing externally
 
 ### A note on "who approved and when"
 
@@ -274,9 +311,10 @@ for the approver. The report never guesses.
 |-----------|---------|---------|
 | `-ClientName` | tenant display name | Optional override. By default the report is named after the tenant display name and default domain read from the tenant (for example `Sample Bank (samplebank.com)`), on the cover, nav, file name, and Word docs |
 | `-TenantId` | current account's home tenant | Tenant GUID or `.onmicrosoft.com` name. Required together with `-ClientId` |
-| `-ClientId` | Microsoft Graph Command Line Tools | Your own app registration's Application (client) ID. See "Register your own app". Can also come from `M365AuditEvidence.settings.json` |
+| `-ClientId` | AuditHat Pulse Reports (PowerShell) connector | Your own app registration's Application (client) ID. See "Register your own app". Can also come from `M365AuditEvidence.settings.json` |
 | `-OutputFolder` | `.\M365-Audit-Evidence` | Where the report is written |
-| `-AuditDays` | `30` | Directory audit log window |
+| `-AuditDays` | `30` | Directory audit log window; also the window for the Indications of Compromise section (sign-in analysis uses at most 30 days) |
+| `-NoOpen` | off | Do not open the finished report in the default browser |
 | (none) | | **Version** is printed in the console banner, the report navigation and footer (`2026.10.31` style: year.month.day of the last change). The report links to this GitHub repository for source and updates |
 | `-NoHistory` | off | Do not read or write the per-tenant `<Client> - history.json` file; the progress section then shows only the current run |
 | `-TargetScorePercent` | `80` | Target Microsoft Secure Score as a percentage of the maximum achievable score; drives the target, gap and the "Below target" status |
@@ -296,9 +334,10 @@ for the approver. The report never guesses.
    accounts only, so a personal Microsoft account signed in to Windows is never picked up), you sign
    in with the admin account and approve the Authenticator / MFA prompt, and the browser returns to a
    loopback listener (`http://localhost:<random port>/`) on the PC. The token is handed to
-   `Connect-MgGraph -AccessToken` and refreshed automatically during long runs. It uses the same
-   public Microsoft app ("Microsoft Graph Command Line Tools") that `Connect-MgGraph` uses, with only
-   the read-only scopes listed above. If the browser flow fails, or `-DeviceCode` is given, the
+   `Connect-MgGraph -AccessToken` and refreshed automatically during long runs. It identifies itself
+   as the AuditHat Pulse Reports (PowerShell) connector (or your own registration with `-ClientId`)
+   with only the read-only scopes listed above. The same refresh token is exchanged for Exchange
+   Online, Defender for Endpoint and Teams tokens, so one sign-in covers every service. If the browser flow fails, or `-DeviceCode` is given, the
    script falls back to `Connect-MgGraph -UseDeviceCode`. After connecting it compares granted
    scopes to the requested list and warns about any missing ones. Why not plain `Connect-MgGraph`?
    See the WAM row under Troubleshooting.
@@ -306,8 +345,10 @@ for the approver. The report never guesses.
    paging and turns any failure into a warning plus an empty result, so one missing license or
    permission never stops the run. Object IDs (groups, users, roles, apps) are resolved to display
    names in batches through `directoryObjects/getByIds` and cached.
-4. **Exchange Online.** Connects with the same account used for Graph (interactive, MFA-capable),
-   runs only `Get-*` cmdlets, and always disconnects.
+4. **Exchange Online.** Connects with a token derived from the same sign-in (falling back to an
+   interactive prompt if the connector lacks the Exchange permission), runs only `Get-*` cmdlets,
+   and always disconnects. Teams, SharePoint and OneDrive inventories come from Microsoft Graph and
+   the Microsoft 365 usage reports (CSV, up to 48 hours behind).
 5. **Evaluation.** The Security Controls Summary is computed from the collected data. A control is
    only "Enforced" or "Blocked" when an **enabled** Conditional Access policy targets **all users
    and all cloud apps**; report-only or scoped policies show "Partial".
@@ -331,6 +372,87 @@ for the approver. The report never guesses.
 - Charts are inline SVG drawn by the script: one measure per chart (never a dual axis), legend plus
   direct labels on the latest value, hover titles on every mark, status colours only for priorities.
 - Privacy by construction: nothing is transmitted anywhere except Microsoft's own endpoints.
+
+---
+
+## Frequently asked questions
+
+Short answers to the questions banks, credit unions and their IT providers ask (and type into a
+search engine or an AI assistant) when they start auditing Microsoft 365.
+
+**How do I audit Microsoft 365 security for a bank or credit union?**
+Run this script with a Global Reader account. Sections 1 to 3 give the committee the posture, the
+gaps and the plan; sections 5 onward are the evidence an examiner asks to see. Run it quarterly and
+keep the reports; the history file turns them into a trend.
+
+**How do I export all Intune policies and settings?**
+Sections 5 and 6 list every compliance policy, configuration profile, settings-catalog policy and
+endpoint-security policy with its settings and assignments, read live from Intune. `-WordDocs` also
+writes the compliance policies to a Word document.
+
+**How do I audit Conditional Access policies?**
+Section 8 shows every policy with its state, users, applications, conditions, grant and session
+controls, IDs resolved to names. Section 2 tells you whether MFA, legacy-authentication blocking and
+device-based access are actually enforced for all users by an enabled policy, not just configured.
+
+**How do I find users without MFA in Microsoft 365?**
+Section 12 lists enabled accounts with no MFA method registered and the whole user list has a
+"No MFA" filter. Global Administrators without MFA appear as a Critical finding in section 3.
+
+**Who has Global Administrator, and is that too many?**
+Section 13 groups members by role, Global Administrator first, with MFA state and last sign-in.
+Section 3 flags more than four or only one Global Administrator.
+
+**How do I audit Entra ID (Azure AD) users, guests and stale accounts?**
+Section 12: counts, last sign-in (needs Entra ID P1), licences, admin flag, devices per user, and
+filters for Stale, Guests, Disabled and Licensed. For on-premises Active Directory use the companion
+AD Governance Report.
+
+**How do I check SPF, DKIM and DMARC for my domain?**
+Section 14 resolves the public DNS records for every email-enabled domain and reads the DKIM signing
+state from Exchange Online, then rates each domain and explains what to fix.
+
+**What is Microsoft Secure Score and what target should we set?**
+Secure Score is Microsoft's own percentage of recommended security actions you have completed,
+compared with similar organizations. The report shows current, maximum, comparison averages and a
+target (`-TargetScorePercent`, default 80%). Every open action with points appears in section 3.
+
+**How can I tell whether our Microsoft 365 tenant has been compromised?**
+Section 4 collects the traces attackers leave: inbox rules that hide or forward mail, federation
+changes, new administrators, MFA methods added, admin password resets, new app secrets, successful
+legacy sign-ins, password sprays, sign-ins from unexpected countries, and users Entra ID Protection
+flags as at risk. Items marked urgent should be checked the same day; the rest should match a
+ticket. It is a strong early-warning list, not a replacement for Microsoft Defender or a SIEM.
+
+**How do I audit Teams and SharePoint external sharing?**
+Section 16 lists every team with guests, public visibility, owners and activity, plus the tenant's
+guest and external access settings; section 17 shows the SharePoint and OneDrive sharing level
+(Anyone links, guests, domain restrictions), every site and OneDrive, and who shared files externally
+in the last 30 days.
+
+**Does this tool send our data anywhere?**
+No. It runs on your PC, reads your tenant with your own account, and writes files only to the output
+folder. There is no Audit Hat server behind it. See Privacy above.
+
+**Can our MSP run this for us, or can we run it against several tenants?**
+Yes. Each run signs in to one tenant and names its files after that tenant, so one folder holds many
+clients side by side. The Remediation Plan copies straight into tickets, and the next run shows what
+the MSP closed.
+
+**Do we need Windows PowerShell 7, Intune or Entra ID P1?**
+No. Windows PowerShell 5.1 works. Without Intune, P1 or P2 the affected rows say "not licensed" and
+explain what the licence would add; nothing fails.
+
+**How often should we run it, and can it be scheduled?**
+Quarterly, or before each exam and after any major change. Because it needs an interactive MFA
+sign-in it is run by a person rather than a scheduled task; that is deliberate for a read-only tool
+with Global Reader rights.
+
+**What do examiners actually ask for?**
+In our experience: MFA enforcement and registration, privileged-access review, legacy authentication,
+device management coverage, mail forwarding controls, application consent, external sharing, and
+evidence that someone reviews all of this regularly. Sections 2 and 3 are written to answer those in
+plain language.
 
 ---
 
