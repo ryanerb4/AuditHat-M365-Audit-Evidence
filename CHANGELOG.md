@@ -31,6 +31,9 @@ First public release.
   anti-phishing, Safe Links, Safe Attachments, Defender for Endpoint devices and scores.
 - Directory synchronization status (Entra Connect, on-premises AD domains, sync server) and a link to
   the companion AuditHat AD Governance Report.
+- Review These Now: when the unified audit log is off, the sharing, download and mailbox-rule rows read
+  Urgent ("cannot be checked") instead of Not checked, and the Anyone-links row combines the audit log
+  with the section 19 share scan.
 - Section 19 "Sharing and Access": every share and access grant across SharePoint sites, OneDrive,
   Teams and Exchange (sharing links and item permissions, guest and public teams, shared-channel
   external users, Full Access and Send As, calendar Default/Anonymous permissions), classified Anyone /
