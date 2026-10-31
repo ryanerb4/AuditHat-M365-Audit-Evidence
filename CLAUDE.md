@@ -5,9 +5,12 @@ Working notes for AI assistants and contributors on this repository.
 ## What this is
 
 `Get-M365AuditEvidence.ps1` is Audit Hat's free, read-only Microsoft 365 audit evidence collector
-for banks and credit unions. One run produces one self-contained HTML report (executive summary,
-controls, remediation plan with ticket export, indications of compromise, and 13 evidence sections),
-a ticket CSV and a per-tenant history file. See `README.md` for the user view and
+for banks and credit unions, meant to be run monthly. One run produces one self-contained HTML report
+(executive summary with governance and sign-off, controls, remediation roadmap with step-by-step
+playbooks and ticket export, indications of compromise, framework alignment to NIST / CIS / FFIEC,
+and 13 evidence sections), a ticket CSV and a per-tenant history file. Audiences, in this order:
+board, IT committee, security officer and IT provider / MSP, auditors, examiners. Every piece of
+report text should be written so each of them can act on it. See `README.md` for the user view and
 `docs/DEVELOPMENT.md` for the code map, conventions and verification steps. Read both before
 changing the script.
 

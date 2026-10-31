@@ -31,6 +31,22 @@ First public release.
   anti-phishing, Safe Links, Safe Attachments, Defender for Endpoint devices and scores.
 - Directory synchronization status (Entra Connect, on-premises AD domains, sync server) and a link to
   the companion AuditHat AD Governance Report.
+- Remediation Plan as a roadmap: findings grouped into this week / 30 days / 90 days / 12 months,
+  and every finding carries a playbook (owner, effort, prerequisite, numbered steps in the admin
+  centers, "done when" test) plus framework references; Secure Score actions are matched to the same
+  playbooks. Tickets and the CSV include steps, owner, phase and standards. Links name the admin center.
+- Section 5 "Framework Alignment": every control mapped to NIST CSF 2.0 / SP 800-63B, CIS Microsoft 365
+  Foundations Benchmark, CIS Controls v8 and FFIEC / NCUA (IT Handbook, 2021 Authentication Guidance,
+  CAT / ACET domains), with Met / Gap filters and a statement of what the report does not test.
+- Authentication Methods: MFA product detection (Entra MFA, federated provider, third-party external
+  authentication method), registered methods by strength, phone-only MFA users, Authenticator
+  number-matching settings, and passkey / passwordless rollout tracking (policy, users, administrators,
+  stage). New controls "Phishing-resistant MFA (passkeys) rollout" and "Phishing-resistant MFA for
+  administrators", a KPI tile, a monthly trend chart and history tracking.
+- Executive Summary: "How to use this report" by role (board, IT committee, security officer / MSP,
+  auditor, examiner), a Governance and review table (report number, previous report, progress, open
+  findings by phase, monthly cadence, next report due, standards referenced) and a sign-off block.
+- Recommended cadence is now monthly; the README has an operating model table.
 - Section 4 "Possible Indications of Compromise": directory audit log (role assignments, MFA method
   changes, password resets, policy changes, domain/federation changes, app credentials and owners,
   account lifecycle), app registration secrets and certificates added, new enterprise apps and accounts,

@@ -31,10 +31,12 @@ map that future work is built from.
 | `$IssueCatalog` | Every info icon: key -> Title / Why / Fix. Written for a bank board, not an engineer |
 | Collection | One block per data source, in report order: tenant, Secure Score, Intune, devices, Conditional Access, audit events, apps, users, roles, auth methods, Exchange (+ EOP/Defender policies, email auth DNS), Defender for Endpoint, indications of compromise, Teams, SharePoint/OneDrive |
 | Evaluation | `Add-SummaryRow` per control; status strings drive colour via regexes in the summary table builder and `Get-StatusRank`; `$remediationGuides` + `Add-Remediation` build the plan; `$ControlPortalUrl` maps controls to the admin center page |
+| Playbooks and frameworks | `$Playbooks` (control name -> Owner, Effort, Prereq, Steps, Verify), `$ScorePlaybooks` (regex -> playbook for Secure Score titles), `$GenericScorePlaybook`, `Get-Playbook`; `$FrameworkMap` (control -> Nist, Cis365, CisV8, Ffiec), `$ScoreFrameworkRules`, `Get-FrameworkText`; `$PhaseByPriority` / `$PhaseOrder` drive the Roadmap. `Add-Remediation` attaches all three automatically by finding name |
+| Authentication analysis | After `$mfaRegistered`: `$MethodLabels`, `$PhishingResistantMethods`, `$WeakMethods`, MFA product detection (`$mfaProduct` from external authentication method configurations, federated domains, else Entra MFA), `$passkeyKv`, `$passkeyStatus`, `$adminPhishStatus` |
 | Flagging | `_issues` hashtables added to rows, `$SummaryIssueMap` for summary rows |
 | Executive figures | `Add-Kpi`, `$execNarrative` |
 | History | `<Client> - history.json`: snapshot, diff vs previous (`$changeRows`), SVG charts (`New-SvgTrendChart`, `New-SvgGroupedBars`) |
-| Rendering | `$sections` (nav), `$SectionAnchors`, `$css`, section here-strings (`$iocSectionHtml`, `$mdmSection`, `$teamsSectionHtml`, `$spoSectionHtml`), the main `$html` here-string, the `<script>` block (filters, info panels, ticket copy/CSV) |
+| Rendering | `$sections` (nav), `$SectionAnchors`, `$css`, section here-strings (`$iocSectionHtml`, `$frameworkSectionHtml`, `$mdmSection`, `$teamsSectionHtml`, `$spoSectionHtml`), `$governanceKv`, the main `$html` here-string, the `<script>` block (filters, info panels, ticket copy/CSV, open step lists before print) |
 | Output | HTML written with UTF-8, ticket CSV, history saved, report opened unless `-NoOpen`, optional Word documents |
 
 ## Conventions
@@ -53,6 +55,13 @@ map that future work is built from.
 - **Edit scripts.** Large edits have been applied with small Python scripts that assert the anchor
   text occurs exactly once before replacing (String.Replace replaces every occurrence; a duplicated
   executive summary block came from forgetting that).
+- **Status words for new controls:** `Complete`, `In progress (N%)`, `Not started`, `None found`,
+  `N urgent`, `N to review`, `Guests present`, `Anyone links` are already in the regex families.
+- **Playbook steps are written for the person receiving the ticket:** admin center > page > setting
+  > value, in click order, then a "done when" that names the report row that will change.
+- **Framework references:** CIS M365 Benchmark numbering follows v4.0 at family level (for example
+  5.2.2) unless the item is stable across editions; FFIEC CAT / ACET codes are at domain.component
+  level (D3.PC.Am). Keep the disclaimer in section 5 when editing.
 - **Numbers in section titles** appear in three places: `$sections`, the `<h2>` of each section
   template, and the README table. Renumber all three.
 

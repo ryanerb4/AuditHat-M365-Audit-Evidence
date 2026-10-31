@@ -12,25 +12,52 @@ from one read-only run.
 One read-only PowerShell script signs in to Microsoft 365 with your own admin account, collects the
 Entra ID, Intune, Conditional Access, application, user, privileged-role, Exchange Online, Defender,
 Teams and SharePoint/OneDrive evidence an IT auditor or examiner asks for, and writes a single
-self-contained HTML report: an executive summary with KPI tiles, a prioritized remediation plan that
-doubles as a ticket list for your IT provider, a **Possible Indications of Compromise** section
-(what to research today), Microsoft Secure Score against a target, and the detailed evidence behind
-every number, with a clickable **i** icon on each configuration issue explaining why it matters and
-how to fix it. The report opens in your browser when the run finishes. Optionally it also produces two Word
+self-contained HTML report: an executive summary with KPI tiles, a **remediation roadmap** (this week,
+30 days, 90 days, the year) in which every finding carries step-by-step instructions, an owner, an
+effort estimate and a "done when" test and copies straight into a ticket for your IT provider, a
+**Possible Indications of Compromise** section (what to research today), a **Framework Alignment**
+section mapping every control to NIST CSF 2.0, NIST SP 800-63B, the CIS Microsoft 365 Benchmark, CIS
+Controls v8 and FFIEC / NCUA expectations, the **MFA product in use and the passkey rollout**,
+Microsoft Secure Score against a target, and the detailed evidence behind every number, with a
+clickable **i** icon on each configuration issue explaining why it matters and how to fix it. The
+report opens in your browser when the run finishes. Optionally it also produces two Word
 documents (`MDM Configuration.docx`, `Conditional Access Policies.docx`).
+
+## Operating model: who runs it, how often, who reads what
+
+The goal is a repeatable, evidence-based cycle that a community bank or credit union can sustain with
+its existing staff and IT provider, and that auditors and examiners recognise as a working program.
+
+| Cadence | Who | What happens |
+|---|---|---|
+| **Monthly** | Security officer or IT provider / MSP | Run the script (10 to 30 minutes). Work section 4 (indications of compromise) the same day. Turn the Remediation Plan into tickets (Copy ticket / CSV) and assign owners. File the report in the evidence folder; the history file updates itself |
+| **Monthly, next run** | Same | "Progress since last report" shows what closed, what regressed and what is new. Chase open tickets |
+| **Quarterly** | IT steering committee | Review the Executive Summary, the Roadmap and the Governance table; approve phases, owners, licences and budget; record decisions in minutes. Sign the review line |
+| **At least annually, and after any incident** | Board (or its risk / audit committee) | Receive the Executive Summary (narrative, tiles, trend charts, progress). Sign the "noted by the board" line |
+| **Before and during an exam or audit** | Auditor / examiner | Section 2 as the control test, section 5 for the framework mapping, the history for the trend, sections 6 to 18 as evidence. The sign-off block shows governance |
+
+Keep every monthly report. Together with the history file they are the evidence that controls are
+measured the same way each month, that gaps are planned and worked, and that the board is informed:
+the three things examiners ask for under FFIEC, NCUA and GLBA Safeguards expectations.
 
 Who it is for:
 
-- **IT committee and board members:** the Executive Summary and Remediation Plan read without any
-  Microsoft 365 knowledge and show where the institution stands, what is missing, and what to do
-  first.
-- **IT and security staff:** every finding links to the exact setting, policy, user, device or
-  mailbox behind it, with filters and search on the large tables.
-- **Auditors and examiners:** factual evidence pulled live from the tenant, dated and attributed,
-  with nothing retyped or screenshotted from portals.
+- **Board members:** the opening paragraph, the tiles and the trend charts answer "are we secure, are
+  we improving, is there a plan" without any Microsoft 365 knowledge.
+- **IT committee members:** the Roadmap lays the plan out by phase with owners and effort, and the
+  Governance table shows cadence, progress and the next review date, so the committee can decide
+  and record decisions.
+- **Security officers and IT providers / MSPs:** every finding has step-by-step instructions, a
+  prerequisite, a "done when" test and a Copy ticket button; the indications-of-compromise section
+  tells them what to look at today.
+- **Auditors:** section 2 is the control test, section 5 maps every control to NIST, CIS and FFIEC /
+  NCUA so recommendations can cite the standard, and the evidence sections back every status.
+- **Examiners:** the monthly history, the progress section and the sign-off block demonstrate that
+  the institution measures, reviews, plans and improves, with evidence pulled live from the tenant,
+  dated and attributed, nothing retyped from portals.
 
-Run it quarterly (or before each exam) and keep the reports: the same controls measured the same way
-give the committee a trend and the auditor a history. The script keeps a small history file per
+Run it monthly and keep the reports: the same controls measured the same way give the committee a
+trend and the auditor a history. The script keeps a small history file per
 tenant next to the reports (headline figures and control statuses only, no names) and uses it to
 show **Progress since last report** in the Executive Summary: a change log of every control,
 finding and headline count that moved, plus two trend charts (Secure Score against target, and open
@@ -262,21 +289,22 @@ without that person needing to understand PowerShell or Microsoft Graph.
 |---|---------|--------|-----------------|
 | 1 | Executive Summary | organization, subscribedSkus, security/secureScores, history file, computed | Narrative paragraph and KPI tiles (Secure Score vs target, controls met, Critical/High and Medium findings, users without MFA, stale users, Global Administrators, devices, devices not in Intune, stale devices), top five priorities, **Progress since last report** (change log of controls, findings and counts versus the previous run, Secure Score trend chart with target line, open findings by priority chart), privacy statement, tenant details with bulleted licensed capabilities, directory synchronization status (Entra Connect, AD domains, sync server), verified domains table, subscriptions |
 | 2 | Security Controls Summary | computed from everything below | One row per control (MFA, legacy auth, device access, Intune, TAP, device join, forwarding, consent, **email authentication**, **email protection**, **endpoint protection**, Secure Score, privileged roles): Status, Evidence, link to detail. Only **enabled** CA policies count as enforced |
-| 3 | Remediation Plan | summary results, secureScoreControlProfiles, directoryRoles, subscribedSkus | Every failed control with a recommended action, privileged-access findings (Global Admins without MFA, too many or a single Global Admin), licensing gaps, and every unimplemented Secure Score action with points available. Sorted Critical, High, Medium, Low, then by points. Each finding carries a stable reference (`AH-xxxxxx`), a **Copy ticket** button, priority filters and a **CSV download**; the same CSV is written next to the report |
+| 3 | Remediation Plan | summary results, secureScoreControlProfiles, directoryRoles, subscribedSkus, built-in playbooks | **Roadmap** by phase (this week, 30 days, 90 days, 12 months) then every failed control with a recommended action, **step-by-step instructions, owner, effort, prerequisite and a done-when test**, privileged-access findings (Global Admins without MFA, too many or a single Global Admin), licensing gaps, and every unimplemented Secure Score action with points available. Sorted Critical, High, Medium, Low, then by points. Each finding carries a stable reference (`AH-xxxxxx`), a **Copy ticket** button, priority filters and a **CSV download**; the same CSV is written next to the report |
 | 4 | Possible Indications of Compromise | auditLogs/directoryAudits (targeted activities), auditLogs/signIns (P1), identityProtection (P2), applications, Exchange inbox rules, mailbox and recipient permissions, transport rules | What an attacker leaves behind: domain/federation changes, inbox rules that hide, delete or forward mail, risky users, legacy sign-ins, password sprays, MFA denials, Conditional Access blocks, sign-ins from several countries, new role assignments, MFA method changes, admin password resets, policy changes, new app credentials and apps, new accounts and guests, Full Access and Send As grants, transport rule changes, mailbox auditing. Rolled up as *urgent* (investigate today) and *to review* (match to a ticket) |
-| 5 | MDM Compliance Policies | deviceCompliancePolicies | Intune compliance policies per platform: Basics / Settings / Actions for noncompliance / Assignments |
-| 6 | Intune Policies | deviceConfigurations, configurationPolicies (settings catalog), intents (endpoint security), enrollment configs, app protection | Every Intune policy and the settings behind it |
-| 7 | Managed Devices | managedDevices, devices (+registeredOwners) | Device counts, then one device list joining every Entra ID device with its Intune record: owner, **last user** seen by Intune, last activity, compliance, encryption. Quick filters: Stale (90 days), Not in Intune, Noncompliant, Not encrypted, Personal, Windows, Disabled, plus text search |
-| 8 | Conditional Access | conditionalAccess/policies, namedLocations, authenticationStrength | Full policy detail with IDs resolved to names; filtered tables for MFA, legacy-auth block, device-based policies |
-| 9 | Authentication Methods | security defaults, authenticationMethodsPolicy, deviceRegistrationPolicy | Security defaults, Temporary Access Pass, each method's state, who may join devices |
-| 10 | Enterprise Applications | servicePrincipals, oauth2PermissionGrants, appRoleAssignments, authorizationPolicy | Publisher, admin vs user consent, delegated and application permissions, date added, approver |
-| 11 | Application Consent Audit Events | auditLogs/directoryAudits | Consent / add-app events in the last `-AuditDays` days |
-| 12 | Users | users (signInActivity), userRegistrationDetails, directoryRoles | Counts, enabled members without MFA registered, full user list with last sign-in, licenses, MFA methods, Admin flag and **number of devices**. Quick filters: Stale (90 days, needs P1), No MFA, Admin, Guests, Disabled, Licensed, plus text search |
-| 13 | Privileged Users | directoryRoles, roleEligibilityScheduleInstances | One table per role, Global Administrator first, MFA and last sign-in per member, PIM eligible list |
-| 14 | Exchange Online | ExchangeOnlineManagement cmdlets, public DNS (Resolve-DnsName) | Auto-forwarding (remote domain, outbound spam policy, mailbox, inbox rules, transport rules), POP/IMAP/SMTP AUTH, modern auth, and **email authentication per custom domain: MX, SPF (and its all-mechanism), DKIM signing state plus selector CNAMEs, DMARC policy, coverage and reporting** |
-| 15 | Defender and Email Protection | Get-HostedContentFilterPolicy, Get-MalwareFilterPolicy, Get-AntiPhishPolicy, Get-SafeLinksPolicy, Get-SafeAttachmentPolicy, Get-AtpPolicyForO365, Get-EOPProtectionPolicyRule, Get-ATPProtectionPolicyRule, Defender for Endpoint API | Licence status for Defender for Office 365 and Defender for Endpoint, preset security policies, anti-spam actions and bulk threshold, ZAP, anti-malware common attachments filter, anti-phishing impersonation settings and threshold, Safe Links, Safe Attachments, and Defender for Endpoint device list (sensor health, risk, exposure, last seen) with exposure and configuration scores |
-| 16 | Microsoft Teams | groups (Team-provisioned), groups/{id}/owners and members, teams/{id}, groupSettings (Group.Unified), reports/getTeamsTeamActivityDetail, optional Teams PowerShell (federation, client and meeting policy) | Guest and external access posture, every team with visibility, owners, members, guests, archived state and 90-day activity. Filters: Guests, Public, No owner, Single owner, Inactive, Archived |
-| 17 | SharePoint and OneDrive | admin/sharepoint/settings, reports/getSharePointSiteUsageDetail, getOneDriveUsageAccountDetail, getSharePointActivityUserDetail, getOneDriveActivityUserDetail | Tenant sharing level (Anyone links, guests, domain restrictions, re-sharing, legacy auth, unmanaged sync, idle sign-out), users who shared files externally in 30 days, every site (type, owner, activity, storage) and every OneDrive with the owner's account state. Filters on each table |
+| 5 | Framework Alignment | computed from section 2 plus a built-in mapping table | Every measured control with its status and the expectation it answers in NIST CSF 2.0 / SP 800-63B, the CIS Microsoft 365 Foundations Benchmark (v4.0 numbering), CIS Controls v8 and FFIEC / NCUA (IT Handbook, 2021 Authentication Guidance, CAT / ACET domain codes); filters Met / Gap / Not measured; a plain statement of what the report does not test |
+| 6 | MDM Compliance Policies | deviceCompliancePolicies | Intune compliance policies per platform: Basics / Settings / Actions for noncompliance / Assignments |
+| 7 | Intune Policies | deviceConfigurations, configurationPolicies (settings catalog), intents (endpoint security), enrollment configs, app protection | Every Intune policy and the settings behind it |
+| 8 | Managed Devices | managedDevices, devices (+registeredOwners) | Device counts, then one device list joining every Entra ID device with its Intune record: owner, **last user** seen by Intune, last activity, compliance, encryption. Quick filters: Stale (90 days), Not in Intune, Noncompliant, Not encrypted, Personal, Windows, Disabled, plus text search |
+| 9 | Conditional Access | conditionalAccess/policies, namedLocations, authenticationStrength | Full policy detail with IDs resolved to names; filtered tables for MFA, legacy-auth block, device-based policies |
+| 10 | Authentication Methods | security defaults, authenticationMethodsPolicy, userRegistrationDetails, deviceRegistrationPolicy | Security defaults, Temporary Access Pass, each method's state, **the MFA product in use** (Entra MFA, federated provider or third-party external method), registered methods by strength, users relying on phone-only MFA, **passkey / passwordless rollout** (policy state, users and administrators with phishing-resistant methods, rollout stage), who may join devices |
+| 11 | Enterprise Applications | servicePrincipals, oauth2PermissionGrants, appRoleAssignments, authorizationPolicy | Publisher, admin vs user consent, delegated and application permissions, date added, approver |
+| 12 | Application Consent Audit Events | auditLogs/directoryAudits | Consent / add-app events in the last `-AuditDays` days |
+| 13 | Users | users (signInActivity), userRegistrationDetails, directoryRoles | Counts, enabled members without MFA registered, full user list with last sign-in, licenses, MFA methods, Admin flag and **number of devices**. Quick filters: Stale (90 days, needs P1), No MFA, Admin, Guests, Disabled, Licensed, plus text search |
+| 14 | Privileged Users | directoryRoles, roleEligibilityScheduleInstances | One table per role, Global Administrator first, MFA and last sign-in per member, PIM eligible list |
+| 15 | Exchange Online | ExchangeOnlineManagement cmdlets, public DNS (Resolve-DnsName) | Auto-forwarding (remote domain, outbound spam policy, mailbox, inbox rules, transport rules), POP/IMAP/SMTP AUTH, modern auth, and **email authentication per custom domain: MX, SPF (and its all-mechanism), DKIM signing state plus selector CNAMEs, DMARC policy, coverage and reporting** |
+| 16 | Defender and Email Protection | Get-HostedContentFilterPolicy, Get-MalwareFilterPolicy, Get-AntiPhishPolicy, Get-SafeLinksPolicy, Get-SafeAttachmentPolicy, Get-AtpPolicyForO365, Get-EOPProtectionPolicyRule, Get-ATPProtectionPolicyRule, Defender for Endpoint API | Licence status for Defender for Office 365 and Defender for Endpoint, preset security policies, anti-spam actions and bulk threshold, ZAP, anti-malware common attachments filter, anti-phishing impersonation settings and threshold, Safe Links, Safe Attachments, and Defender for Endpoint device list (sensor health, risk, exposure, last seen) with exposure and configuration scores |
+| 17 | Microsoft Teams | groups (Team-provisioned), groups/{id}/owners and members, teams/{id}, groupSettings (Group.Unified), reports/getTeamsTeamActivityDetail, optional Teams PowerShell (federation, client and meeting policy) | Guest and external access posture, every team with visibility, owners, members, guests, archived state and 90-day activity. Filters: Guests, Public, No owner, Single owner, Inactive, Archived |
+| 18 | SharePoint and OneDrive | admin/sharepoint/settings, reports/getSharePointSiteUsageDetail, getOneDriveUsageAccountDetail, getSharePointActivityUserDetail, getOneDriveActivityUserDetail | Tenant sharing level (Anyone links, guests, domain restrictions, re-sharing, legacy auth, unmanaged sync, idle sign-out), users who shared files externally in 30 days, every site (type, owner, activity, storage) and every OneDrive with the owner's account state. Filters on each table |
 
 ### The auditor questions this answers
 
@@ -382,34 +410,34 @@ search engine or an AI assistant) when they start auditing Microsoft 365.
 
 **How do I audit Microsoft 365 security for a bank or credit union?**
 Run this script with a Global Reader account. Sections 1 to 3 give the committee the posture, the
-gaps and the plan; sections 5 onward are the evidence an examiner asks to see. Run it quarterly and
+gaps and the plan; sections 6 onward are the evidence an examiner asks to see. Run it quarterly and
 keep the reports; the history file turns them into a trend.
 
 **How do I export all Intune policies and settings?**
-Sections 5 and 6 list every compliance policy, configuration profile, settings-catalog policy and
+Sections 6 and 7 list every compliance policy, configuration profile, settings-catalog policy and
 endpoint-security policy with its settings and assignments, read live from Intune. `-WordDocs` also
 writes the compliance policies to a Word document.
 
 **How do I audit Conditional Access policies?**
-Section 8 shows every policy with its state, users, applications, conditions, grant and session
+Section 9 shows every policy with its state, users, applications, conditions, grant and session
 controls, IDs resolved to names. Section 2 tells you whether MFA, legacy-authentication blocking and
 device-based access are actually enforced for all users by an enabled policy, not just configured.
 
 **How do I find users without MFA in Microsoft 365?**
-Section 12 lists enabled accounts with no MFA method registered and the whole user list has a
+Section 13 lists enabled accounts with no MFA method registered and the whole user list has a
 "No MFA" filter. Global Administrators without MFA appear as a Critical finding in section 3.
 
 **Who has Global Administrator, and is that too many?**
-Section 13 groups members by role, Global Administrator first, with MFA state and last sign-in.
+Section 14 groups members by role, Global Administrator first, with MFA state and last sign-in.
 Section 3 flags more than four or only one Global Administrator.
 
 **How do I audit Entra ID (Azure AD) users, guests and stale accounts?**
-Section 12: counts, last sign-in (needs Entra ID P1), licences, admin flag, devices per user, and
+Section 13: counts, last sign-in (needs Entra ID P1), licences, admin flag, devices per user, and
 filters for Stale, Guests, Disabled and Licensed. For on-premises Active Directory use the companion
 AD Governance Report.
 
 **How do I check SPF, DKIM and DMARC for my domain?**
-Section 14 resolves the public DNS records for every email-enabled domain and reads the DKIM signing
+Section 15 resolves the public DNS records for every email-enabled domain and reads the DKIM signing
 state from Exchange Online, then rates each domain and explains what to fix.
 
 **What is Microsoft Secure Score and what target should we set?**
@@ -425,8 +453,8 @@ flags as at risk. Items marked urgent should be checked the same day; the rest s
 ticket. It is a strong early-warning list, not a replacement for Microsoft Defender or a SIEM.
 
 **How do I audit Teams and SharePoint external sharing?**
-Section 16 lists every team with guests, public visibility, owners and activity, plus the tenant's
-guest and external access settings; section 17 shows the SharePoint and OneDrive sharing level
+Section 17 lists every team with guests, public visibility, owners and activity, plus the tenant's
+guest and external access settings; section 18 shows the SharePoint and OneDrive sharing level
 (Anyone links, guests, domain restrictions), every site and OneDrive, and who shared files externally
 in the last 30 days.
 
@@ -444,9 +472,37 @@ No. Windows PowerShell 5.1 works. Without Intune, P1 or P2 the affected rows say
 explain what the licence would add; nothing fails.
 
 **How often should we run it, and can it be scheduled?**
-Quarterly, or before each exam and after any major change. Because it needs an interactive MFA
-sign-in it is run by a person rather than a scheduled task; that is deliberate for a read-only tool
-with Global Reader rights.
+Monthly, plus before each exam and after any major change. Monthly is frequent enough to catch drift
+and indications of compromise while they matter and to show examiners a real trend; the history
+keeps 60 runs (five years of monthly reports). Because it needs an interactive MFA sign-in it is run
+by a person rather than a scheduled task; that is deliberate for a read-only tool with Global Reader
+rights. See "Operating model" above for who reviews what and when.
+
+**Which MFA product do we have, and are we ready for passkeys?**
+Section 10 names the MFA product (Microsoft Entra MFA, a federated provider such as ADFS, Okta or
+Duo, or a third-party external authentication method), lists every registered method by strength,
+counts users who rely only on SMS or voice, and tracks the passkey / passwordless rollout: policy
+state, users and administrators with a phishing-resistant method, and the stage (not started, in
+progress with percentage, complete). The Executive Summary charts the percentage month by month.
+
+**How does the report relate to NIST, CIS and FFIEC?**
+Section 5 maps each control to NIST CSF 2.0 subcategories and SP 800-63B assurance levels, to CIS
+Microsoft 365 Foundations Benchmark sections and CIS Controls v8 safeguards, and to FFIEC references
+(IT Examination Handbook, the 2021 Authentication Guidance, CAT / NCUA ACET domain codes). Every ticket
+and CSV row carries the same references so recommendations can cite the standard. It is a mapping to
+help auditors and examiners, not a certification.
+
+**Is the remediation plan actionable or just a list of settings?**
+Each finding carries the exact steps (which admin center, which page, which value), who should do it,
+how long it takes, what licence it needs and how the next report proves it is done, grouped into a
+roadmap for this week, 30 days, 90 days and the year. Secure Score actions are matched to the same
+playbooks so Microsoft's one-line recommendations are backed by concrete steps.
+
+**What is in it for a board member who is not technical?**
+The first page: one paragraph in plain language, a row of tiles (score, controls met, findings,
+compromise indicators, passkeys, MFA gaps, administrators, devices), the top five priorities, the
+progress since last month with trend charts, and a governance table with the review cadence and the
+next due date. There is a sign-off line for the board.
 
 **What do examiners actually ask for?**
 In our experience: MFA enforcement and registration, privileged-access review, legacy authentication,
@@ -526,9 +582,11 @@ automatically.
    union board) and `Fix`, then map it in `$SummaryIssueMap` (summary row) or pass its key in the
    `_issues` hashtable of a table row or `-Issues` of `New-KvTable` to get the clickable **i** icon.
 5. **Make it a finding.** Add a line to `$remediationGuides` (`Control`, `Bad` status regex,
-   `Priority`, `Action`) or call `Add-Remediation` directly for a finding that is not a control.
-   It then appears in the Remediation Plan, gets its stable `AH-` reference, the Copy ticket button
-   and the CSV export, and is counted in the open-findings chart.
+   `Priority`, `Action`, optional `Url`) or call `Add-Remediation` directly for a finding that is not
+   a control. Add a `$Playbooks` entry under the same name (`Owner`, `Effort`, `Prereq`, `Steps`,
+   `Verify`) and a `$FrameworkMap` entry (`Nist`, `Cis365`, `CisV8`, `Ffiec`). The finding then
+   appears in the Roadmap and the plan with its steps, owner, standards, stable `AH-` reference,
+   Copy ticket button and CSV export, and is counted in the open-findings chart.
 6. **Add a section (optional).** Append `@{ Id = 'myid'; Title = '15. My Section' }` to
    `$sections`, map the title in `$SectionAnchors`, and emit `<section id='myid'>...</section>` in the
    report body using `New-HtmlTable` (with `-Id` and `-Filters` for quick filters) or `New-KvTable`.
