@@ -61,6 +61,7 @@
 .NOTES
   Version:  2026.10.31  (date-based: year.month.day of the last change)
   Source:   https://github.com/ryanerb4/AuditHat-M365-Audit-Evidence
+  See also: https://github.com/ryanerb4/audithat-ad-governance-report (companion report for on-premises AD)
   Author:   Ryan Erb
   Provided: Audit Hat  (https://AuditHat.com)
   Purpose:  Help banks and credit unions understand their Microsoft 365 security posture and risk,
@@ -106,13 +107,15 @@ param(
     [switch]$WordDocs,
     [switch]$SkipExchange,         # skip the Exchange Online checks (auto-forwarding, POP/IMAP/SMTP AUTH)
     [switch]$SkipInboxRules,       # skip per-mailbox inbox rule scan (slow on large tenants)
-    [switch]$DeviceCode            # sign in with a device code instead of the browser (for remote sessions or if the browser flow fails)
+    [switch]$DeviceCode,           # sign in with a device code instead of the browser (for remote sessions or if the browser flow fails)
+    [switch]$NoHistory             # do not read or write the per-tenant history file used for the progress charts and change log
 )
 
 $ErrorActionPreference = 'Stop'
 $ReportDate = Get-Date
 $ScriptVersion = '2026.10.31'   # date-based version: year.month.day of the last change
 $RepoUrl = 'https://github.com/ryanerb4/AuditHat-M365-Audit-Evidence'
+$AdRepoUrl = 'https://github.com/ryanerb4/audithat-ad-governance-report'   # companion report for on-premises Active Directory
 
 # Optional settings file next to the script so -ClientId / -TenantId do not have to be typed every run:
 #   { "ClientId": "<app registration client id>", "TenantId": "<tenant id or domain>" }
@@ -571,8 +574,8 @@ function New-HtmlTable {
             $cell = HtmlEnc $v
             $cls = ''
             switch -Regex ([string]$v) {
-                '^(True|Enabled|enabled|Compliant|Required|Yes|Block|block|On)$' { $cls = " class='good'" }
-                '^(False|Disabled|disabled|No|Not registered|Off|enabledForReportingButNotEnforced)$' { $cls = " class='warn'" }
+                '^(True|Enabled|enabled|Compliant|Required|Yes|Block|block|On|Improved|Resolved)$' { $cls = " class='good'" }
+                '^(False|Disabled|disabled|No|Not registered|Off|enabledForReportingButNotEnforced|Regressed|New)$' { $cls = " class='warn'" }
             }
             [void]$sb.Append("<td$cls>$cell$(Get-RowIssueIcon $rowIssues $c)</td>")
         }
@@ -1732,6 +1735,7 @@ details.info[open] summary{background:#7a0016}
 details.info .tip{position:absolute;z-index:30;left:0;top:22px;width:380px;max-width:70vw;background:#fff;border:1px solid var(--line);border-left:4px solid var(--warn);box-shadow:0 6px 18px rgba(0,0,0,.18);padding:10px 12px;font-size:9.5pt;font-weight:normal;color:var(--ink);text-align:left;border-radius:4px}
 details.info .tip p{margin:6px 0 0}
 .legend{font-size:9.5pt;color:#555;margin:0 0 10px}.legend .i{display:inline-flex;width:15px;height:15px;border-radius:50%;background:var(--warn);color:#fff;font:bold 10px Georgia,serif;align-items:center;justify-content:center;vertical-align:middle}
+.charts{display:flex;gap:18px;flex-wrap:wrap;margin:10px 0 20px}.chart{flex:1 1 460px;min-width:0;border:1px solid var(--line);border-radius:6px;padding:8px 10px;background:#fff}.chart svg{display:block}.chart svg text{font-family:Arial,Helvetica,sans-serif}
 .privacy{background:#eef6ee;border:1px solid #bfe0c2;border-left:5px solid var(--good);padding:10px 14px;border-radius:4px;font-size:10pt;margin:16px 0}
 @media print{nav{display:none}main{margin:0;padding:0}section{page-break-before:always}section:first-of-type{page-break-before:avoid}table.grid thead th{position:static}.filters{display:none}details.info .tip{position:static;display:block;width:auto;box-shadow:none;margin-top:4px}details.info summary{display:none}details.info:not([open]) .tip{display:none}}
 "@
@@ -1760,7 +1764,7 @@ $syncLast    = $org.onPremisesLastSyncDateTime
 $adDomains   = @($users | ForEach-Object { $_.onPremisesDomainName } | Where-Object { $_ } | Sort-Object -Unique)
 $syncServers = @($users | Where-Object { $_.userPrincipalName -match '^Sync_(.+)_[0-9a-fA-F]{8,}@' } | ForEach-Object { $Matches[1] } | Sort-Object -Unique)
 $syncedUserCount = @($users | Where-Object { $_.onPremisesSyncEnabled }).Count
-$tenantKv['Directory synchronization (Entra Connect)'] = $(if ($syncEnabled) { "Enabled. Last sync $(Format-DateText $syncLast). $syncedUserCount synced user account(s)." } else { 'Not configured: all accounts are cloud-only.' })
+$tenantKv['Directory synchronization (Entra Connect)'] = $(if ($syncEnabled) { "Enabled. Last sync $(Format-DateText $syncLast). $syncedUserCount synced user account(s). The on-premises directory itself is covered by the companion AuditHat AD Governance Report ($AdRepoUrl)." } else { 'Not configured: all accounts are cloud-only.' })
 if ($syncEnabled) {
     $tenantKv['On-premises AD domain(s)'] = $(if ($adDomains.Count) { $adDomains } else { 'Not reported on synced users' })
     $tenantKv['Entra Connect sync server'] = $(if ($syncServers.Count) { "$($syncServers -join '; ') (from the Sync_<server>_ service account name)" } else { 'Not determinable from Graph (no Sync_<server>_ service account found)' })
@@ -1873,8 +1877,133 @@ $execNarrative = "This report was produced on $($ReportDate.ToString('MMMM d, yy
     "The remediation plan contains <b>$($remediationSorted.Count) findings</b> ($remediationCounts). " +
     $(if ($enabledMemberCount) { "There are $enabledMemberCount enabled user accounts$(if ($null -ne $noMfaCount) { ", $noMfaCount without MFA registered" })$(if ($null -ne $staleUserCount) { ", $staleUserCount with no sign-in in $StaleDays days" }), $gaCount Global Administrator account(s), and $($allDeviceRows.Count) devices, of which $notInIntuneCount enabled device(s) are not managed by Intune." } else { '' })
 
-$remHtml = New-Object System.Text.StringBuilder
-[void]$remHtml.Append("<table class='grid'><thead><tr><th style='width:3%'>#</th><th style='width:7%'>Priority</th><th style='width:17%'>Finding</th><th style='width:20%'>Current state</th><th>Recommended action</th><th style='width:7%'>Secure Score points</th><th style='width:12%'>Impact / effort</th><th style='width:8%'>Detail</th></tr></thead><tbody>")
+# ----------------------------------------------------------------------------------------------
+# Run history: a small JSON file per tenant in the output folder feeds the progress charts and the change log.
+# It holds only the headline figures and control statuses, never user or device names.
+# ----------------------------------------------------------------------------------------------
+$historyName = ($ClientLabel -replace '[^A-Za-z0-9 ._()-]', '').Trim(); if (-not $historyName) { $historyName = 'Client' }
+$historyPath = Join-Path $OutputFolder "$historyName - history.json"
+$history = @()
+if (-not $NoHistory -and (Test-Path $historyPath)) {
+    try { $history = @(Get-Content $historyPath -Raw -ErrorAction Stop | ConvertFrom-Json) } catch { Write-Warning "Could not read the history file $historyPath : $($_.Exception.Message)" }
+}
+$controlMap = [ordered]@{}; foreach ($row in $script:summaryRows) { $controlMap[[string]$row.Control] = [string]$row.Status }
+$snapshot = [ordered]@{
+    Date = $ReportDate.ToString('yyyy-MM-dd HH:mm'); Version = $ScriptVersion
+    SecureScore = $scoreCurrent; SecureScoreMax = $scoreMax; SecureScorePct = $scorePct; TargetPct = $TargetScorePercent
+    Findings = [ordered]@{ Critical = @($remediationSorted | Where-Object { $_.Priority -eq 'Critical' }).Count; High = @($remediationSorted | Where-Object { $_.Priority -eq 'High' }).Count; Medium = $findMedium; Low = @($remediationSorted | Where-Object { $_.Priority -eq 'Low' }).Count; Total = $remediationSorted.Count }
+    FindingNames = @($remediationSorted | ForEach-Object { [string]$_.Finding })
+    Controls = $controlMap
+    Users = [ordered]@{ Enabled = $enabledMemberCount; NoMfa = $noMfaCount; Stale = $staleUserCount; GlobalAdmins = $gaCount }
+    Devices = [ordered]@{ Total = $allDeviceRows.Count; NotInIntune = $notInIntuneCount; Stale = $staleDeviceCount }
+}
+$previous = if ($history.Count) { $history[-1] } else { $null }
+function Get-StatusRank { param([string]$s)
+    if ($s -match '^(Enabled|Enforced|Blocked|Yes|All enrolled|Restricted|Target met|Complete|Configured|Onboarded)') { return 2 }
+    if ($s -match '^(Not available|Not collected)') { return -1 }
+    if ($s -match '^(Partial|Allowed|All users allowed|No Windows|EOP only|No email domains|No devices onboarded|Not licensed|\d+ (assignments|policies))') { return 1 }
+    return 0
+}
+function Get-JsonProp { param($obj, [string]$name) if ($null -eq $obj) { return $null } ; $p = $obj.PSObject.Properties[$name]; if ($p) { return $p.Value } ; return $null }
+$changeRows = @(); $improvedCount = 0; $regressedCount = 0; $resolvedCount = 0; $newCount = 0
+if ($previous) {
+    $prevPct = Get-JsonProp $previous 'SecureScorePct'
+    if ($null -ne $prevPct -and $null -ne $scorePct -and [int]$prevPct -ne [int]$scorePct) {
+        $dir = if ($scorePct -gt $prevPct) { 'Improved' } else { 'Regressed' }
+        $changeRows += [ordered]@{ 'Area' = 'Microsoft Secure Score'; 'Change' = "Score moved from $prevPct% to $scorePct%"; 'Before' = "$(Get-JsonProp $previous 'SecureScore') of $(Get-JsonProp $previous 'SecureScoreMax')"; 'After' = "$scoreCurrent of $scoreMax"; 'Direction' = $dir }
+        if ($dir -eq 'Improved') { $improvedCount++ } else { $regressedCount++ }
+    }
+    $prevControls = Get-JsonProp $previous 'Controls'
+    foreach ($c in $controlMap.Keys) {
+        $before = [string](Get-JsonProp $prevControls $c)
+        if ($before -and $before -ne $controlMap[$c]) {
+            $rb = Get-StatusRank $before; $ra = Get-StatusRank $controlMap[$c]
+            $dir = if ($ra -gt $rb) { 'Improved' } elseif ($ra -lt $rb) { 'Regressed' } else { 'Changed' }
+            if ($dir -eq 'Improved') { $improvedCount++ } elseif ($dir -eq 'Regressed') { $regressedCount++ }
+            $changeRows += [ordered]@{ 'Area' = 'Control'; 'Change' = $c; 'Before' = $before; 'After' = $controlMap[$c]; 'Direction' = $dir }
+        }
+    }
+    $prevNames = @(Get-JsonProp $previous 'FindingNames'); $curNames = @($snapshot.FindingNames)
+    foreach ($fn in ($prevNames | Where-Object { $_ -and $curNames -notcontains $_ } | Select-Object -First 40)) { $resolvedCount++; $changeRows += [ordered]@{ 'Area' = 'Finding'; 'Change' = $fn; 'Before' = 'Open'; 'After' = 'Resolved'; 'Direction' = 'Resolved' } }
+    foreach ($fn in ($curNames | Where-Object { $_ -and $prevNames -notcontains $_ } | Select-Object -First 40)) { $newCount++; $changeRows += [ordered]@{ 'Area' = 'Finding'; 'Change' = $fn; 'Before' = 'Not present'; 'After' = 'Open'; 'Direction' = 'New' } }
+    $prevUsers = Get-JsonProp $previous 'Users'; $prevDevices = Get-JsonProp $previous 'Devices'
+    $countChecks = @(
+        @{ Area = 'Users'; Label = 'Users without MFA registered'; Before = (Get-JsonProp $prevUsers 'NoMfa'); After = $noMfaCount },
+        @{ Area = 'Users'; Label = "Stale users ($StaleDays days)"; Before = (Get-JsonProp $prevUsers 'Stale'); After = $staleUserCount },
+        @{ Area = 'Users'; Label = 'Global Administrators'; Before = (Get-JsonProp $prevUsers 'GlobalAdmins'); After = $gaCount },
+        @{ Area = 'Devices'; Label = 'Enabled devices not in Intune'; Before = (Get-JsonProp $prevDevices 'NotInIntune'); After = $notInIntuneCount },
+        @{ Area = 'Devices'; Label = "Stale devices ($StaleDays days)"; Before = (Get-JsonProp $prevDevices 'Stale'); After = $staleDeviceCount }
+    )
+    foreach ($k in $countChecks) {
+        if ($null -ne $k.Before -and $null -ne $k.After -and [int]$k.Before -ne [int]$k.After) {
+            $dir = if ([int]$k.After -lt [int]$k.Before) { 'Improved' } else { 'Regressed' }
+            if ($k.Label -eq 'Global Administrators') { $dir = 'Changed' } elseif ($dir -eq 'Improved') { $improvedCount++ } else { $regressedCount++ }
+            $changeRows += [ordered]@{ 'Area' = $k.Area; 'Change' = $k.Label; 'Before' = $k.Before; 'After' = $k.After; 'Direction' = $dir }
+        }
+    }
+}
+$history = @(@($history) + @([pscustomobject]$snapshot) | Select-Object -Last 60)
+if (-not $NoHistory) {
+    try { $history | ConvertTo-Json -Depth 8 | Set-Content -Path $historyPath -Encoding UTF8; Write-Host "History: $historyPath ($($history.Count) run(s))" -ForegroundColor DarkGray }
+    catch { Write-Warning "Could not write the history file $historyPath : $($_.Exception.Message)" }
+}
+
+# ---- Inline SVG charts (no external libraries; one measure per chart)
+function Get-ChartXLabels { param([int]$Count) if ($Count -le 6) { return 0..($Count - 1) } ; $step = [math]::Ceiling($Count / 6); return @(0..($Count - 1) | Where-Object { $_ % $step -eq 0 -or $_ -eq $Count - 1 }) }
+function New-SvgTrendChart {
+    # One series over the run dates, with an optional dashed target line. $Points: array of @{ Label; Value }.
+    param([string]$Title, $Points, [double]$Max = 100, $Target, [string]$Unit = '%', [string]$Color = '#005D9C')
+    $w = 600; $h = 240; $l = 46; $r = 40; $top = 30; $b = 48; $pw = $w - $l - $r; $ph = $h - $top - $b
+    $pts = @($Points | Where-Object { $null -ne $_.Value }); $cnt = $pts.Count
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append("<svg viewBox='0 0 $w $h' width='100%' role='img' aria-label='$(HtmlEnc $Title)'><title>$(HtmlEnc $Title)</title>")
+    [void]$sb.Append("<text x='$l' y='16' font-size='12' font-weight='bold' fill='#000'>$(HtmlEnc $Title)</text>")
+    foreach ($g in 0, 25, 50, 75, 100) { $y = [math]::Round($top + $ph - ($g / 100) * $ph, 1); $v = [math]::Round($Max * $g / 100); [void]$sb.Append("<line x1='$l' y1='$y' x2='$($w - $r)' y2='$y' stroke='#e6e6e6' stroke-width='1'/><text x='$($l - 6)' y='$($y + 4)' font-size='10' text-anchor='end' fill='#555'>$v$Unit</text>") }
+    if ($cnt -eq 0) { [void]$sb.Append("<text x='$($l + $pw / 2)' y='$($top + $ph / 2)' font-size='11' text-anchor='middle' fill='#555'>No data yet</text></svg>"); return $sb.ToString() }
+    if ($null -ne $Target -and $Max -gt 0) { $ty = [math]::Round($top + $ph - ([double]$Target / $Max) * $ph, 1); [void]$sb.Append("<line x1='$l' y1='$ty' x2='$($w - $r)' y2='$ty' stroke='#1e7b34' stroke-width='1.5' stroke-dasharray='5,4'/><text x='$($w - $r)' y='$($ty - 4)' font-size='10' text-anchor='end' fill='#1e7b34'>Target $Target$Unit</text>") }
+    $coords = @(); for ($i = 0; $i -lt $cnt; $i++) { $x = if ($cnt -eq 1) { $l + $pw / 2 } else { $l + $i * ($pw / ($cnt - 1)) }; $y = $top + $ph - ([math]::Min([double]$pts[$i].Value, $Max) / $Max) * $ph; $coords += ,@([math]::Round($x, 1), [math]::Round($y, 1)) }
+    if ($cnt -gt 1) { [void]$sb.Append("<polyline fill='none' stroke='$Color' stroke-width='2' stroke-linejoin='round' points='$(($coords | ForEach-Object { "$($_[0]),$($_[1])" }) -join ' ')'/>") }
+    $labelIdx = Get-ChartXLabels $cnt
+    for ($i = 0; $i -lt $cnt; $i++) {
+        [void]$sb.Append("<circle cx='$($coords[$i][0])' cy='$($coords[$i][1])' r='4' fill='$Color' stroke='#fff' stroke-width='2'><title>$(HtmlEnc $pts[$i].Label): $($pts[$i].Value)$Unit</title></circle>")
+        if ($labelIdx -contains $i) { $anchor = if ($cnt -gt 1 -and $i -eq 0) { 'start' } elseif ($cnt -gt 1 -and $i -eq $cnt - 1) { 'end' } else { 'middle' }; [void]$sb.Append("<text x='$($coords[$i][0])' y='$($h - $b + 16)' font-size='10' text-anchor='$anchor' fill='#555'>$(HtmlEnc ([string]$pts[$i].Label).Substring(0, [math]::Min(10, ([string]$pts[$i].Label).Length)))</text>") }
+    }
+    $last = $coords[$cnt - 1]; [void]$sb.Append("<text x='$($last[0] + 8)' y='$($last[1] + 4)' font-size='11' font-weight='bold' text-anchor='start' fill='#000'>$($pts[$cnt - 1].Value)$Unit</text>")
+    [void]$sb.Append('</svg>'); return $sb.ToString()
+}
+function New-SvgGroupedBars {
+    # Grouped bars per run, up to three series; one count axis. $Runs: array of @{ Label; Values = @(a, b, c) }.
+    param([string]$Title, $Runs, [string[]]$Series, [string[]]$Colors)
+    $w = 600; $h = 240; $l = 40; $r = 18; $top = 30; $b = 48; $pw = $w - $l - $r; $ph = $h - $top - $b
+    $runs = @($Runs); $cnt = $runs.Count; $ns = $Series.Count
+    $max = 1; foreach ($run in $runs) { foreach ($v in @($run.Values)) { if ([double]$v -gt $max) { $max = [double]$v } } }
+    $step = [math]::Max(1, [math]::Ceiling($max / 4)); $max = $step * 4
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append("<svg viewBox='0 0 $w $h' width='100%' role='img' aria-label='$(HtmlEnc $Title)'><title>$(HtmlEnc $Title)</title>")
+    [void]$sb.Append("<text x='$l' y='16' font-size='12' font-weight='bold' fill='#000'>$(HtmlEnc $Title)</text>")
+    $lx = $w - $r; for ($s = $ns - 1; $s -ge 0; $s--) { $lx -= (7 * $Series[$s].Length + 26); [void]$sb.Append("<rect x='$lx' y='7' width='10' height='10' rx='2' fill='$($Colors[$s])'/><text x='$($lx + 14)' y='16' font-size='10' fill='#333'>$(HtmlEnc $Series[$s])</text>") }
+    for ($g = 0; $g -le 4; $g++) { $y = [math]::Round($top + $ph - ($g / 4) * $ph, 1); [void]$sb.Append("<line x1='$l' y1='$y' x2='$($w - $r)' y2='$y' stroke='#e6e6e6' stroke-width='1'/><text x='$($l - 6)' y='$($y + 4)' font-size='10' text-anchor='end' fill='#555'>$($g * $step)</text>") }
+    if ($cnt -eq 0) { [void]$sb.Append("<text x='$($l + $pw / 2)' y='$($top + $ph / 2)' font-size='11' text-anchor='middle' fill='#555'>No data yet</text></svg>"); return $sb.ToString() }
+    $gw = $pw / $cnt; $bw = [math]::Max(4, [math]::Min(28, ($gw * 0.72) / $ns - 2)); $labelIdx = Get-ChartXLabels $cnt
+    for ($i = 0; $i -lt $cnt; $i++) {
+        $gx = $l + $i * $gw + ($gw - ($bw + 2) * $ns) / 2
+        for ($s = 0; $s -lt $ns; $s++) {
+            $v = [double](@($runs[$i].Values)[$s]); $bh = [math]::Round(($v / $max) * $ph, 1); $x = [math]::Round($gx + $s * ($bw + 2), 1); $y = [math]::Round($top + $ph - $bh, 1)
+            if ($bh -gt 0) { [void]$sb.Append("<rect x='$x' y='$y' width='$bw' height='$bh' rx='2' fill='$($Colors[$s])'><title>$(HtmlEnc $runs[$i].Label), $(HtmlEnc $Series[$s]): $v</title></rect>") }
+            if ($i -eq $cnt - 1) { [void]$sb.Append("<text x='$($x + $bw / 2)' y='$($y - 4)' font-size='10' font-weight='bold' text-anchor='middle' fill='#000'>$v</text>") }
+        }
+        if ($labelIdx -contains $i) { [void]$sb.Append("<text x='$([math]::Round($l + $i * $gw + $gw / 2, 1))' y='$($h - $b + 16)' font-size='10' text-anchor='middle' fill='#555'>$(HtmlEnc ([string]$runs[$i].Label).Substring(0, [math]::Min(10, ([string]$runs[$i].Label).Length)))</text>") }
+    }
+    [void]$sb.Append('</svg>'); return $sb.ToString()
+}
+$scoreTrend = New-SvgTrendChart -Title 'Microsoft Secure Score (% of maximum) by report' -Points @($history | ForEach-Object { @{ Label = ([string](Get-JsonProp $_ 'Date')).Substring(0, 10); Value = (Get-JsonProp $_ 'SecureScorePct') } }) -Max 100 -Target $TargetScorePercent -Unit '%'
+$findingTrend = New-SvgGroupedBars -Title 'Open findings by priority, by report' -Runs @($history | ForEach-Object { $fd = Get-JsonProp $_ 'Findings'; @{ Label = ([string](Get-JsonProp $_ 'Date')).Substring(0, 10); Values = @(([int](Get-JsonProp $fd 'Critical') + [int](Get-JsonProp $fd 'High')), [int](Get-JsonProp $fd 'Medium'), [int](Get-JsonProp $fd 'Low')) } }) -Series @('Critical + High', 'Medium', 'Low') -Colors @('#b00020', '#B8860B', '#005D9C')
+$progressHtml = if ($previous) {
+    "<p class='meta'>Compared with the previous report of $(HtmlEnc (Get-JsonProp $previous 'Date')) (script $(HtmlEnc (Get-JsonProp $previous 'Version'))): <b>$improvedCount improvement(s)</b>, $regressedCount regression(s), $resolvedCount finding(s) resolved, $newCount new finding(s). $($history.Count) reports in the history.</p>" +
+    $(if ($changeRows.Count) { New-HtmlTable $changeRows -Columns 'Area','Change','Before','After','Direction' } else { "<p class='empty'>No measured control, finding or headline count changed since the previous report.</p>" })
+} else { "<p class='meta'>This is the first report kept for this tenant. From the second run onward this section lists every control, finding and headline count that changed, and the charts show the trend. The history (headline figures only, no names) is stored next to the report in <b>$(HtmlEnc $historyName) - history.json</b>; keep it with the reports.</p>" }
+
+$remHtml = New-Object System.Text.StringBuilder[void]$remHtml.Append("<table class='grid'><thead><tr><th style='width:3%'>#</th><th style='width:7%'>Priority</th><th style='width:17%'>Finding</th><th style='width:20%'>Current state</th><th>Recommended action</th><th style='width:7%'>Secure Score points</th><th style='width:12%'>Impact / effort</th><th style='width:8%'>Detail</th></tr></thead><tbody>")
 $remIdx = 0
 foreach ($item in $remediationSorted) {
     $remIdx++
@@ -1883,126 +2012,7 @@ foreach ($item in $remediationSorted) {
     [void]$remHtml.Append("<tr><td>$remIdx</td><td class='$cls'>$(HtmlEnc $item.Priority)</td><td><b>$(HtmlEnc $item.Finding)</b></td><td>$(HtmlEnc $item.State)</td><td>$(HtmlEnc $item.Action)</td><td>$(if ($null -ne $item.Points) { HtmlEnc $item.Points })</td><td>$(HtmlEnc $item.Impact)</td><td>$detail</td></tr>")
 }
 [void]$remHtml.Append('</tbody></table>')
-if ($remIdx -eq 0) { # ---- Directory synchronization (Entra Connect) for the overview
-$syncEnabled = [bool]$org.onPremisesSyncEnabled
-$syncLast    = $org.onPremisesLastSyncDateTime
-$adDomains   = @($users | ForEach-Object { $_.onPremisesDomainName } | Where-Object { $_ } | Sort-Object -Unique)
-$syncServers = @($users | Where-Object { $_.userPrincipalName -match '^Sync_(.+)_[0-9a-fA-F]{8,}@' } | ForEach-Object { $Matches[1] } | Sort-Object -Unique)
-$syncedUserCount = @($users | Where-Object { $_.onPremisesSyncEnabled }).Count
-$tenantKv['Directory synchronization (Entra Connect)'] = $(if ($syncEnabled) { "Enabled. Last sync $(Format-DateText $syncLast). $syncedUserCount synced user account(s)." } else { 'Not configured: all accounts are cloud-only.' })
-if ($syncEnabled) {
-    $tenantKv['On-premises AD domain(s)'] = $(if ($adDomains.Count) { $adDomains } else { 'Not reported on synced users' })
-    $tenantKv['Entra Connect sync server'] = $(if ($syncServers.Count) { "$($syncServers -join '; ') (from the Sync_<server>_ service account name)" } else { 'Not determinable from Graph (no Sync_<server>_ service account found)' })
-}
-$tenantIssues = @{}
-if ($syncEnabled -and $syncLast -and ([datetime]$syncLast) -lt (Get-Date).AddHours(-3)) { $tenantIssues['Directory synchronization (Entra Connect)'] = @('sync-stale', "Last sync $(Format-DateText $syncLast).") }
-if ($script:HasEntraP1 -eq $false) { $tenantIssues['Licensed capabilities'] = 'license-p1' } elseif ($script:HasIntune -eq $false) { $tenantIssues['Licensed capabilities'] = 'license-intune' }
-if ($null -ne $scoreCurrent -and $scoreCurrent -lt $scoreTarget) { $tenantIssues['Microsoft Secure Score'] = 'secure-score' }
-
-# ---- Flag configuration issues on rows and key/value tables (rendered as clickable (i) icons)
-$SummaryIssueMap = @{
-    'MFA enforced for sign-in' = 'mfa-not-enforced'; 'MFA registered by all users' = 'mfa-not-registered'; 'Legacy authentication protocols disabled' = 'legacy-auth'
-    'Conditional Access restricts access to Entra joined or compliant devices' = 'device-ca'; 'Intune deployed to Windows computers' = 'intune-coverage'
-    'Intune compliance policies' = 'compliance-none'; 'Intune configuration and security policies' = 'config-none'; 'Temporary Access Pass (TAP) implemented' = 'tap-disabled'
-    'Users restricted from joining devices to Entra ID' = 'device-join-open'; 'Automatic email forwarding outside the tenant' = 'forwarding'; 'User consent to applications' = 'consent-allowed'
-    'Microsoft Secure Score' = 'secure-score'; 'Security defaults' = 'security-defaults-off'; 'Email authentication (SPF, DKIM, DMARC)' = 'dmarc-missing'; 'Email protection (Defender for Office 365 / EOP)' = 'defender-not-licensed'; 'Endpoint protection (Defender for Endpoint)' = 'mde-not-licensed'
-}
-foreach ($r in $userRows) {
-    $tg = " $($r['_tags']) "; $is = @{}
-    if ($tg -like '* nomfa *') { $is['MFA registered'] = $(if ($tg -like '* admin *') { 'admin-no-mfa' } else { 'user-no-mfa' }) }
-    if ($tg -like '* stale *') { $is['Last sign-in'] = 'user-stale' }
-    if ($tg -like '* disabled *' -and $tg -like '* licensed *') { $is['Licenses'] = 'user-disabled-licensed' }
-    if ($tg -like '* guest *') { $is['User principal name'] = 'guest' }
-    if ($is.Count) { $r['_issues'] = $is }
-}
-foreach ($r in $allDeviceRows) {
-    $tg = " $($r['_tags']) "; $is = @{}
-    if ($tg -like '* stale *') { $is['Last activity'] = 'device-stale' }
-    if ($tg -like '* notintune *' -and $r['Enabled'] -ne $false) { $is['Intune'] = 'device-not-intune' }
-    if ($tg -like '* noncompliant *') { $is['Compliance'] = 'device-noncompliant' }
-    if ($tg -like '* notencrypted *') { $is['Encrypted'] = 'device-not-encrypted' }
-    if ($is.Count) { $r['_issues'] = $is }
-}
-$HighPrivPerm = 'ReadWrite\.All|Directory\.ReadWrite|RoleManagement\.ReadWrite|AppRoleAssignment\.ReadWrite|Mail\.(Read|ReadWrite|Send)|Files\.ReadWrite\.All|Sites\.FullControl|full_access_as_app|Exchange\.ManageAsApp|User\.ReadWrite\.All|Group\.ReadWrite\.All|Application\.ReadWrite'
-foreach ($r in $appRows) {
-    $is = @{}
-    if ($r['Publisher'] -match 'unverified|Unknown') { $is['Publisher'] = 'app-unverified' }
-    if ($r['User-consented delegated permissions'] -ne 'None') { $is['User-consented delegated permissions'] = 'app-user-consent' }
-    if ($r['Application permissions'] -match $HighPrivPerm) { $is['Application permissions'] = 'app-high-privilege' }
-    elseif ($r['Admin-consented delegated permissions'] -match $HighPrivPerm) { $is['Admin-consented delegated permissions'] = 'app-high-privilege' }
-    if ($is.Count) { $r['_issues'] = $is }
-}
-foreach ($r in $caSummaryRows) { if ($r['State'] -ne 'On') { $r['_issues'] = @{ 'State' = 'ca-not-enabled' } } }
-foreach ($r in $authMethodRows) { if ($r['State'] -eq 'enabled' -and $r['Method'] -in @('Sms', 'Voice', 'Email')) { $r['_issues'] = @{ 'State' = 'auth-weak-method' } } }
-foreach ($r in $profileRows) { if (-not $r['Included'] -or $r['Included'] -eq 'None') { $r['_issues'] = @{ 'Included' = 'policy-unassigned' } } }
-foreach ($r in @($fwdMailboxRows)) { if ($r -and $r['External'] -eq 'Yes') { $r['_issues'] = @{ 'External' = 'forwarding' } } }
-foreach ($r in @($fwdRuleRows))    { if ($r -and $r['External'] -eq 'Yes') { $r['_issues'] = @{ 'External' = 'forwarding' } } }
-foreach ($r in @($casRows)) {
-    if (-not $r) { continue }; $is = @{}
-    if ($r['POP enabled'] -eq $true) { $is['POP enabled'] = 'pop-imap' }; if ($r['IMAP enabled'] -eq $true) { $is['IMAP enabled'] = 'pop-imap' }
-    if ([string]$r['SMTP AUTH'] -like 'Enabled*') { $is['SMTP AUTH'] = 'smtp-auth' }
-    if ($is.Count) { $r['_issues'] = $is }
-}
-$exoIssues = @{}
-if ($exoCollected) {
-    if ($exoKv['Default remote domain (*) allows auto-forward'] -eq $true) { $exoIssues['Default remote domain (*) allows auto-forward'] = 'remote-domain-forward' }
-    if ([string]$exoKv['Outbound spam policy automatic forwarding'] -match '(?i)\bOn\b') { $exoIssues['Outbound spam policy automatic forwarding'] = 'spam-forward-on' }
-    if ([int]$exoKv['Mailboxes forwarding to an external address'] -gt 0) { $exoIssues['Mailboxes forwarding to an external address'] = 'forwarding' }
-    if (-not $SkipInboxRules -and [int]$exoKv['Inbox rules forwarding to an external address'] -gt 0) { $exoIssues['Inbox rules forwarding to an external address'] = 'forwarding' }
-    if ($exoKv['Modern authentication (OAuth2) enabled'] -eq $false) { $exoIssues['Modern authentication (OAuth2) enabled'] = 'modern-auth-off' }
-    if ($exoKv['SMTP AUTH disabled tenant-wide'] -eq $false) { $exoIssues['SMTP AUTH disabled tenant-wide'] = 'smtp-auth' }
-    if ([int]$exoKv['Mailboxes with POP enabled'] -gt 0) { $exoIssues['Mailboxes with POP enabled'] = 'pop-imap' }
-    if ([int]$exoKv['Mailboxes with IMAP enabled'] -gt 0) { $exoIssues['Mailboxes with IMAP enabled'] = 'pop-imap' }
-}
-$tapIssues    = @{}; if ($tap -and $tap.state -ne 'enabled') { $tapIssues['Temporary Access Pass state'] = 'tap-disabled' }
-$devRegIssues = @{}; if ($devRegPolicy -and $devRegKv['Users may join devices to Entra ID'] -match 'all') { $devRegIssues['Users may join devices to Entra ID'] = 'device-join-open' }
-$secDefIssues = @{}; if ($null -ne $secDefaults.isEnabled -and -not $secDefaults.isEnabled -and -not $mfaAllUsersEnforced.Count) { $secDefIssues['Security defaults'] = 'security-defaults-off' }
-$appGovIssues = @{}
-if ($userConsentSetting -notmatch '^Do not allow') { $appGovIssues['User consent setting'] = 'consent-allowed' }
-if ($appGovKv['Admin consent request workflow'] -eq 'Disabled') { $appGovIssues['Admin consent request workflow'] = 'consent-workflow-off' }
-if ($appGovKv['Users can register applications'] -eq $true) { $appGovIssues['Users can register applications'] = 'app-registration-open' }
-$defenderKvIssues = @{}
-if (-not $script:HasDefenderP1) { $defenderKvIssues['Defender for Office 365 licence'] = 'defender-not-licensed' }
-if (-not $script:HasMDE) { $defenderKvIssues['Defender for Endpoint licence'] = 'mde-not-licensed' }
-if ($defenderCollected -and $presetOn -eq 0) { $defenderKvIssues['Preset security policies enabled'] = 'preset-off' }
-if ($atpGlobal -and ($atpGlobal.EnableATPForSPOTeamsODB -ne $true -or $atpGlobal.EnableSafeDocs -ne $true) -and $script:HasDefenderP1) { $defenderKvIssues['Defender for SharePoint, OneDrive and Teams'] = 'safeattach-spo-off' }
-if ($script:HasDefenderP1 -and $defenderCollected -and -not $safeLinksActive) { $defenderKvIssues['Defender for Office 365 licence'] = 'safelinks-none' }
-$userStatIssues = @{}
-if ([string]$userStats['Enabled members with no MFA registered'] -match '^\d+$' -and [int]$userStats['Enabled members with no MFA registered'] -gt 0) { $userStatIssues['Enabled members with no MFA registered'] = 'mfa-not-registered' }
-if ([string]$userStats['Enabled members with no sign-in in 90 days'] -match '^\d+$' -and [int]$userStats['Enabled members with no sign-in in 90 days'] -gt 0) { $userStatIssues['Enabled members with no sign-in in 90 days'] = 'user-stale' }
-$deviceStatIssues = @{}
-if ([int]$deviceStats['Entra Windows devices NOT enrolled in Intune'] -gt 0) { $deviceStatIssues['Entra Windows devices NOT enrolled in Intune'] = 'intune-coverage' }
-if ($staleDeviceCount -gt 0) { $deviceStatIssues["Stale devices (no activity in $StaleDays days)"] = 'device-stale' }
-
-# ---- Executive summary figures
-$controlsRated = @($script:summaryRows | Where-Object { [string]$_.Status -notmatch '^(Not available|Not collected)' })
-$controlsMet   = @($controlsRated | Where-Object { [string]$_.Status -match '^(Enabled|Enforced|Blocked|Yes|All enrolled|Restricted|Target met)' })
-$findCritHigh  = @($remediationSorted | Where-Object { $_.Priority -in @('Critical', 'High') }).Count
-$findMedium    = @($remediationSorted | Where-Object { $_.Priority -eq 'Medium' }).Count
-$enabledMemberCount = @($users | Where-Object { $_.accountEnabled -and $_.userType -eq 'Member' }).Count
-$noMfaCount    = if (@($regDetails).Count) { @($userRows | Where-Object { " $($_['_tags']) " -like '* nomfa *' }).Count } else { $null }
-$staleUserCount = if ($signInAvailable) { @($userRows | Where-Object { " $($_['_tags']) " -like '* stale *' }).Count } else { $null }
-$notInIntuneCount = @($allDeviceRows | Where-Object { " $($_['_tags']) " -like '* notintune *' -and $_['Enabled'] -ne $false }).Count
-$kpiHtml = New-Object System.Text.StringBuilder
-function Add-Kpi { param($Value, [string]$Label, [string]$Class = '') [void]$script:kpiHtml.Append("<div class='kpi $Class'><div class='v'>$(HtmlEnc $Value)</div><div class='l'>$(HtmlEnc $Label)</div></div>") }
-if ($null -ne $scoreCurrent) { Add-Kpi "$scorePct%" "Secure Score: $scoreCurrent of $scoreMax points (target $scoreTarget)" $(if ($scoreCurrent -ge $scoreTarget) { 'good' } else { 'bad' }) } else { Add-Kpi 'n/a' 'Secure Score not available' 'mid' }
-Add-Kpi "$($controlsMet.Count) of $($controlsRated.Count)" 'Security controls met' $(if ($controlsMet.Count -eq $controlsRated.Count) { 'good' } elseif ($controlsMet.Count * 2 -ge $controlsRated.Count) { 'mid' } else { 'bad' })
-Add-Kpi $findCritHigh 'Critical and High findings' $(if ($findCritHigh -eq 0) { 'good' } else { 'bad' })
-Add-Kpi $findMedium 'Medium findings' $(if ($findMedium -eq 0) { 'good' } else { 'mid' })
-Add-Kpi $enabledMemberCount 'Enabled user accounts' ''
-Add-Kpi $(if ($null -ne $noMfaCount) { $noMfaCount } else { 'n/a' }) 'Users without MFA registered' $(if ($null -eq $noMfaCount) { 'mid' } elseif ($noMfaCount -eq 0) { 'good' } else { 'bad' })
-Add-Kpi $(if ($null -ne $staleUserCount) { $staleUserCount } else { 'n/a' }) "Stale users (no sign-in in $StaleDays days)" $(if ($null -eq $staleUserCount) { 'mid' } elseif ($staleUserCount -eq 0) { 'good' } else { 'mid' })
-Add-Kpi $gaCount 'Global Administrators' $(if ($gaCount -ge 2 -and $gaCount -le 4) { 'good' } else { 'mid' })
-Add-Kpi $allDeviceRows.Count 'Devices (Entra ID and Intune)' ''
-Add-Kpi $notInIntuneCount 'Enabled devices not in Intune' $(if ($notInIntuneCount -eq 0) { 'good' } else { 'mid' })
-Add-Kpi $staleDeviceCount "Stale devices ($StaleDays days)" $(if ($staleDeviceCount -eq 0) { 'good' } else { 'mid' })
-$execNarrative = "This report was produced on $($ReportDate.ToString('MMMM d, yyyy')) from the live configuration of the $(HtmlEnc $ClientLabel) Microsoft 365 tenant, read-only, by $(HtmlEnc $ctx.Account). " +
-    "It measures $($controlsRated.Count) security controls that regulators and examiners ask about; <b>$($controlsMet.Count) are met</b>. " +
-    $(if ($null -ne $scoreCurrent) { "Microsoft Secure Score is <b>$scoreCurrent of $scoreMax points ($scorePct%)</b> against a target of $scoreTarget points ($TargetScorePercent%)$(if ($scoreCompareText) { "; $scoreCompareText" }). " } else { 'Microsoft Secure Score could not be read. ' }) +
-    "The remediation plan contains <b>$($remediationSorted.Count) findings</b> ($remediationCounts). " +
-    $(if ($enabledMemberCount) { "There are $enabledMemberCount enabled user accounts$(if ($null -ne $noMfaCount) { ", $noMfaCount without MFA registered" })$(if ($null -ne $staleUserCount) { ", $staleUserCount with no sign-in in $StaleDays days" }), $gaCount Global Administrator account(s), and $($allDeviceRows.Count) devices, of which $notInIntuneCount enabled device(s) are not managed by Intune." } else { '' })
-
-$remHtml = New-Object System.Text.StringBuilder; [void]$remHtml.Append("<p class='empty'>No findings. Every measured control passed and every Secure Score action is implemented.</p>") }
+if ($remIdx -eq 0) { $remHtml = New-Object System.Text.StringBuilder; [void]$remHtml.Append("<p class='empty'>No findings. Every measured control passed and every Secure Score action is implemented.</p>") }
 $summaryTable = New-Object System.Text.StringBuilder
 [void]$summaryTable.Append("<table class='grid'><thead><tr><th style='width:26%'>Control</th><th style='width:14%'>Status</th><th>Evidence</th><th style='width:12%'>Detail</th></tr></thead><tbody>")
 foreach ($row in $script:summaryRows) {
@@ -2039,7 +2049,7 @@ if (Test-Path $logoPath) {
 }
 $brandLink = "<a href='https://audithat.com' target='_blank' rel='noopener'>AuditHat.com</a>"
 $navHtml = New-Object System.Text.StringBuilder
-[void]$navHtml.Append("$(if ($logoImg) { "<a href='https://audithat.com' target='_blank' rel='noopener'>$logoImg</a>" })<h1>$(HtmlEnc $ClientName)</h1><div class='sub'>$(if ($DefaultDomain) { "$(HtmlEnc $DefaultDomain)<br>" })Microsoft 365 Audit Evidence<br>$($ReportDate.ToString('MMMM d, yyyy'))<br>Provided by $brandLink<br>Script version $ScriptVersion &middot; <a href='$RepoUrl' target='_blank' rel='noopener'>GitHub</a></div>")
+[void]$navHtml.Append("$(if ($logoImg) { "<a href='https://audithat.com' target='_blank' rel='noopener'>$logoImg</a>" })<h1>$(HtmlEnc $ClientName)</h1><div class='sub'>$(if ($DefaultDomain) { "$(HtmlEnc $DefaultDomain)<br>" })Microsoft 365 Audit Evidence<br>$($ReportDate.ToString('MMMM d, yyyy'))<br>Provided by $brandLink<br>Script version $ScriptVersion &middot; <a href='$RepoUrl' target='_blank' rel='noopener'>GitHub</a><br>Companion: <a href='$AdRepoUrl' target='_blank' rel='noopener'>AD Governance Report</a></div>")
 foreach ($s in $sections) {
     [void]$navHtml.Append("<a href='#$($s.Id)'>$(HtmlEnc $s.Title)</a>")
     foreach ($sub in @($s.Sub | Where-Object { $_ })) { [void]$navHtml.Append("<a class='l2' href='#$($sub.Id)'>$(HtmlEnc $sub.Title)</a>") }
@@ -2105,6 +2115,9 @@ $html = @"
 <div class='kpis'>$($kpiHtml.ToString())</div>
 <h3>Top priorities</h3>
 <div class='exec'>$(if ($remediationSorted.Count) { '<ol>' + ((@($remediationSorted | Select-Object -First 5) | ForEach-Object { "<li><b>$(HtmlEnc $_.Priority):</b> $(HtmlEnc $_.Finding)$(if ($_.Points) { " ($($_.Points) Secure Score points)" })</li>" }) -join '') + '</ol>' } else { "<p class='empty'>No open findings.</p>" }) <p class='meta'>Full list with recommended actions in <a href='#remediation'>section 3, Remediation Plan</a>.</p></div>
+<h3>Progress since last report</h3>
+$progressHtml
+<div class='charts'><div class='chart'>$scoreTrend</div><div class='chart'>$findingTrend</div></div>
 <div class='privacy'><b>Privacy.</b> This report was generated locally by the free Audit Hat M365 Audit Evidence script ($brandLink) on the computer of the signed-in user. The script reads the tenant with that user's own permissions and writes only to the local output folder. No data is sent to Audit Hat or any third party.</div>
 <h3>Tenant details</h3>
 $(New-KvTable $tenantKv -Issues $tenantIssues)
@@ -2220,7 +2233,7 @@ $(if ($script:HasDefenderP1) { New-HtmlTable $safeAttachRows -Columns 'Policy','
 <h3>Defender for Endpoint devices</h3>
 $(if ($mdeCollected) { (New-KvTable $mdeKv) + (New-HtmlTable $mdeRows -Id 'tbl-mde' -Filters $MdeFilters -EmptyText 'No devices are onboarded to Defender for Endpoint.') } else { "<p class='empty'>$(HtmlEnc $mdeEvidence)</p>" })
 </section>
-<footer class='brand'>$(if ($logoImg) { "<a href='https://audithat.com' target='_blank' rel='noopener'>$logoImg</a>" })<div>Microsoft 365 Audit Evidence for $(HtmlEnc $ClientLabel), generated $($ReportDate.ToString('MMMM d, yyyy HH:mm')) by $(HtmlEnc $ctx.Account).<br>Produced locally by the free, read-only Audit Hat M365 Audit Evidence script, version $ScriptVersion (<a href='$RepoUrl' target='_blank' rel='noopener'>source and updates on GitHub</a>). Provided by $brandLink. No data left your organization.</div></footer>
+<footer class='brand'>$(if ($logoImg) { "<a href='https://audithat.com' target='_blank' rel='noopener'>$logoImg</a>" })<div>Microsoft 365 Audit Evidence for $(HtmlEnc $ClientLabel), generated $($ReportDate.ToString('MMMM d, yyyy HH:mm')) by $(HtmlEnc $ctx.Account).<br>Produced locally by the free, read-only Audit Hat M365 Audit Evidence script, version $ScriptVersion (<a href='$RepoUrl' target='_blank' rel='noopener'>source and updates on GitHub</a>). Provided by $brandLink. No data left your organization.<br>Running on-premises Active Directory as well? The companion <a href='$AdRepoUrl' target='_blank' rel='noopener'>AuditHat AD Governance Report</a> covers it the same way.</div></footer>
 <script>
 (function(){
   document.querySelectorAll('.filters').forEach(function(bar){

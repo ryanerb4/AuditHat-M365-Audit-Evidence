@@ -28,7 +28,17 @@ Who it is for:
   with nothing retyped or screenshotted from portals.
 
 Run it quarterly (or before each exam) and keep the reports: the same controls measured the same way
-give the committee a trend and the auditor a history.
+give the committee a trend and the auditor a history. The script keeps a small history file per
+tenant next to the reports (headline figures and control statuses only, no names) and uses it to
+show **Progress since last report** in the Executive Summary: a change log of every control,
+finding and headline count that moved, plus two trend charts (Secure Score against target, and open
+findings by priority) across all kept runs. See `CHANGELOG.md` for the script's own version history.
+
+**Companion project for on-premises Active Directory:**
+[AuditHat AD Governance Report](https://github.com/ryanerb4/audithat-ad-governance-report) does the
+same job for the on-premises directory (accounts, groups, privileged access, password policy, stale
+objects). Institutions that synchronise AD to Microsoft 365 should run both; this report shows the
+Entra Connect sync status and links to the companion from the overview and the footer.
 
 ## What the report looks like
 
@@ -193,7 +203,7 @@ tables alike, so an executive can click through from any page without reading th
 
 | # | Section | Source | What it answers |
 |---|---------|--------|-----------------|
-| 1 | Executive Summary | organization, subscribedSkus, security/secureScores, computed | Narrative paragraph and KPI tiles (Secure Score vs target, controls met, Critical/High and Medium findings, users without MFA, stale users, Global Administrators, devices, devices not in Intune, stale devices), top five priorities, privacy statement, tenant details with bulleted licensed capabilities, verified domains table, subscriptions |
+| 1 | Executive Summary | organization, subscribedSkus, security/secureScores, history file, computed | Narrative paragraph and KPI tiles (Secure Score vs target, controls met, Critical/High and Medium findings, users without MFA, stale users, Global Administrators, devices, devices not in Intune, stale devices), top five priorities, **Progress since last report** (change log of controls, findings and counts versus the previous run, Secure Score trend chart with target line, open findings by priority chart), privacy statement, tenant details with bulleted licensed capabilities, directory synchronization status (Entra Connect, AD domains, sync server), verified domains table, subscriptions |
 | 2 | Security Controls Summary | computed from everything below | One row per control (MFA, legacy auth, device access, Intune, TAP, device join, forwarding, consent, **email authentication**, **email protection**, **endpoint protection**, Secure Score, privileged roles): Status, Evidence, link to detail. Only **enabled** CA policies count as enforced |
 | 3 | Remediation Plan | summary results, secureScoreControlProfiles, directoryRoles, subscribedSkus | Every failed control with a recommended action, privileged-access findings (Global Admins without MFA, too many or a single Global Admin), licensing gaps, and every unimplemented Secure Score action with points available. Sorted Critical, High, Medium, Low, then by points |
 | 4 | MDM Compliance Policies | deviceCompliancePolicies | Intune compliance policies per platform: Basics / Settings / Actions for noncompliance / Assignments |
@@ -242,6 +252,7 @@ for the approver. The report never guesses.
 | `-OutputFolder` | `.\M365-Audit-Evidence` | Where the report is written |
 | `-AuditDays` | `30` | Directory audit log window |
 | (none) | | **Version** is printed in the console banner, the report navigation and footer (`2026.10.31` style: year.month.day of the last change). The report links to this GitHub repository for source and updates |
+| `-NoHistory` | off | Do not read or write the per-tenant `<Client> - history.json` file; the progress section then shows only the current run |
 | `-TargetScorePercent` | `80` | Target Microsoft Secure Score as a percentage of the maximum achievable score; drives the target, gap and the "Below target" status |
 | `-WordDocs` | off | Also produce the two `.docx` files (needs Word) |
 | `-SkipExchange` | off | Skip the Exchange Online section |
@@ -291,6 +302,8 @@ for the approver. The report never guesses.
   The Audit Hat logo (`AuditHat-Logo.png`, kept next to the script) is embedded in the report as a
   data URI so the HTML stays a single file; if the file is missing the report simply has no logo.
 - Table filters are plain JavaScript inside the HTML; no external scripts, fonts or network calls.
+- Charts are inline SVG drawn by the script: one measure per chart (never a dual axis), legend plus
+  direct labels on the latest value, hover titles on every mark, status colours only for priorities.
 - Privacy by construction: nothing is transmitted anywhere except Microsoft's own endpoints.
 
 ---
