@@ -63,8 +63,9 @@
   Source:   https://github.com/ryanerb4/AuditHat-M365-Audit-Evidence
   Author:   Ryan Erb
   Provided: Audit Hat  (https://AuditHat.com)
-  Purpose:  Help banks and credit unions measure Microsoft 365 security and compliance posture,
-            understand risk, and produce auditor-ready evidence without portal screenshots.
+  Purpose:  Help banks and credit unions understand their Microsoft 365 security posture and risk,
+            maintain it over time, and give IT committees, board members, examiners and auditors
+            the information they need from one read-only run, without portal screenshots.
   License:  Apache License 2.0 (see LICENSE in the repository).
             Provided as-is, without warranty. Review the output before sharing it outside your
             organization; it contains user, device, and application inventory.

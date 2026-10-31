@@ -4,13 +4,41 @@
 
 **Author:** Ryan Erb · **Provided by:** [Audit Hat](https://AuditHat.com)
 
-One read-only PowerShell script that signs in to Microsoft 365, collects the Entra ID, Intune, and
-Exchange Online evidence an IT auditor asks a community bank or credit union for, and writes a
-single self-contained HTML report with a left navigation bar. Optionally also produces two Word
+**Built for banks and credit unions.** This script is designed to help financial institutions
+understand their Microsoft 365 security posture and risk, maintain it over time, and give the IT
+steering committee, the board, examiners and auditors the information they need, in plain language,
+from one read-only run.
+
+One read-only PowerShell script signs in to Microsoft 365 with your own admin account, collects the
+Entra ID, Intune, Conditional Access, application, user, privileged-role, Exchange Online and
+Defender evidence an IT auditor or examiner asks for, and writes a single self-contained HTML
+report: an executive summary with KPI tiles, a prioritized remediation plan, Microsoft Secure Score
+against a target, and the detailed evidence behind every number, with a clickable **i** icon on each
+configuration issue explaining why it matters and how to fix it. Optionally it also produces two Word
 documents (`MDM Configuration.docx`, `Conditional Access Policies.docx`).
 
-The goal is to help banks measure their Microsoft 365 security and compliance posture, understand
-their risk, and hand auditors factual evidence without anyone taking portal screenshots.
+Who it is for:
+
+- **IT committee and board members:** the Executive Summary and Remediation Plan read without any
+  Microsoft 365 knowledge and show where the institution stands, what is missing, and what to do
+  first.
+- **IT and security staff:** every finding links to the exact setting, policy, user, device or
+  mailbox behind it, with filters and search on the large tables.
+- **Auditors and examiners:** factual evidence pulled live from the tenant, dated and attributed,
+  with nothing retyped or screenshotted from portals.
+
+Run it quarterly (or before each exam) and keep the reports: the same controls measured the same way
+give the committee a trend and the auditor a history.
+
+## What the report looks like
+
+Screenshots from a sample run (tenant names replaced). Click any image to view it full size.
+
+| | |
+|---|---|
+| [![Executive Summary](docs/screenshots/executive-summary.png)](docs/screenshots/executive-summary.png) **Executive Summary**: narrative, KPI tiles, top priorities, privacy statement, tenant details | [![Security Controls Summary](docs/screenshots/security-controls-summary.png)](docs/screenshots/security-controls-summary.png) **Security Controls Summary** with an info panel open on a flagged control |
+| [![Remediation Plan](docs/screenshots/remediation-plan.png)](docs/screenshots/remediation-plan.png) **Remediation Plan**: every gap ranked Critical to Low with the recommended action and Secure Score points | [![Defender and Email Protection](docs/screenshots/defender-email-protection.png)](docs/screenshots/defender-email-protection.png) **Defender and Email Protection**: licences, presets, anti-spam, anti-malware, anti-phishing, Safe Links and Safe Attachments |
+| [![Exchange Online and email authentication](docs/screenshots/email-authentication.png)](docs/screenshots/email-authentication.png) **Exchange Online**: forwarding, POP/IMAP/SMTP AUTH, and SPF / DKIM / DMARC per domain | [![Users](docs/screenshots/users.png)](docs/screenshots/users.png) **Users**: counts, quick filters (Stale, No MFA, Admin, Guests, Disabled, Licensed), search, devices per user |
 
 ## Privacy: your data never leaves your organization
 
