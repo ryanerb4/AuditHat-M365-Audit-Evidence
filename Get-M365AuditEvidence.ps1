@@ -7,6 +7,7 @@
 
 .DESCRIPTION
   Sections produced:
+    At a Glance (first page: every control in eight areas, each coloured by its weakest control; click an area for its controls)
     1. Executive Summary (narrative, KPI tiles, top priorities, progress since last report, tenant details)
     2. Review These Now: Possible Indications of Compromise (situation table: forwarding, hidden rules, abused apps, sharing, downloads, sign-ins)
     3. Security Controls Summary (one computed status per control)
@@ -857,9 +858,9 @@ $IssueCatalog = @{
 # One rule for every status word in the report: good (pass), warn (action needed), mid (partial / review), na (not measured), info (neutral count)
 function Get-StatusKind { param($Status)
     $v = [string]$Status
-    if ($v -match '^(Enabled|Enforced|Deployed|Blocked|Yes|All enrolled|Restricted|Target met|Complete|Configured|Onboarded|None found|Clear|On track|Done|Pass|True|Compliant|Required|Improved|Resolved|Low|On$|Active|Succeeded|success|Verified|\d+ polic)') { return 'good' }
+    if ($v -match '^(Enabled|Enforced|Deployed|Blocked|Yes|All enrolled|Restricted|Target met|Complete|Configured|Onboarded|None found|Clear|On track|Done|Pass|True|Compliant|Required|Improved|Resolved|Low|On$|Active|Succeeded|success|Verified|Replaced by Conditional Access|[1-9]\d* polic)') { return 'good' }
     if ($v -match '^(Not available|Not collected|Not measured|Not checked|Not scanned|Not applicable|Unknown|n/a|Baseline|Skipped)') { return 'na' }
-    if ($v -match '^(Disabled|Not enforced|Not blocked|No$|Not deployed|None$|None \(|Not started|Active external|Allowed by policy|Below target|Missing|Licensed, not configured|Licensed, not deployed|Licensed, not assigned|Licensed, setup not finished|Licensed, no onboarding policy|Attention needed|\d+ urgent|Anyone links|Off track|Urgent|False|Off$|Regressed|New$|High|Critical|Not configured|Not published|Not licensed|Slipping|Failed|Inactive|Impaired|Noncompliant|Not registered|Action needed|enabledForReportingButNotEnforced)') { return 'warn' }
+    if ($v -match '^(Disabled|Not enforced|Not blocked|No$|Not deployed|None$|None \(|Not started|Active external|Allowed by policy|Below target|Missing|Licensed, not configured|Licensed, not deployed|Licensed, not assigned|Licensed, setup not finished|Licensed, no onboarding policy|Attention needed|\d+ urgent|Anyone links|Off track|Urgent|False|Off$|Regressed|New$|High|Critical|Not configured|Not published|Not licensed|Slipping|Failed|Inactive|Impaired|Noncompliant|Not registered|Action needed|enabledForReportingButNotEnforced|0 polic)') { return 'warn' }
     if ($v -match '^(Partial|Partly deployed|Onboarding policy in place|Licensed, deployment not verified|Allowed|All users allowed|No Windows|EOP only|No email domains|No devices onboarded|Guests present|In progress|\d+ to review|Review|Changed|Medium|Holding|Soft fail|Neutral|One selector|none \(monitor|quarantine|reportOnly|Pass all)') { return 'mid' }
     if ($v -match '^(\d+ assignments|\d+ \/ \d+|Info)') { return 'info' }
     return 'info'
@@ -2870,7 +2871,8 @@ $defenderEvidence = if (-not $exoCollected) { $exoKv['Exchange Online'] }
 $script:summaryRows = @()
 function Add-SummaryRow { param($control, $status, $evidence, $link) $script:summaryRows += [ordered]@{ 'Control' = $control; 'Status' = $status; 'Evidence' = $evidence; 'Section' = $link } }
 
-Add-SummaryRow 'Security defaults' $(if ($secDefaults.isEnabled) { 'Enabled' } else { 'Disabled' }) $(if ($secDefaults.isEnabled) { 'Security defaults enforce MFA registration and block legacy authentication tenant-wide; Conditional Access cannot be used alongside them.' } else { 'Security defaults are off; MFA and legacy authentication controls depend on Conditional Access.' }) 'Authentication Methods'
+# Security defaults off is the recommended setup when Conditional Access enforces MFA for everyone, so it is not a finding then.
+Add-SummaryRow 'Security defaults' $(if ($secDefaults.isEnabled) { 'Enabled' } elseif ($mfaAllUsersEnforced.Count) { 'Replaced by Conditional Access' } else { 'Disabled' }) $(if ($secDefaults.isEnabled) { 'Security defaults enforce MFA registration and block legacy authentication tenant-wide; Conditional Access cannot be used alongside them.' } elseif ($mfaAllUsersEnforced.Count) { 'Security defaults are off because Conditional Access is used instead, which is the recommended setup: an enabled policy requires MFA for all users and all cloud apps (see MFA enforced for sign-in).' } else { 'Security defaults are off; MFA and legacy authentication controls depend on Conditional Access.' }) 'Authentication Methods'
 
 $mfaStatus = if ($secDefaults.isEnabled) { 'Enforced (security defaults)' } elseif ($mfaAllUsersEnforced.Count) { 'Enforced' } elseif (@($mfaPolicies | Where-Object { $_.state -eq 'enabled' }).Count) { 'Partial' } else { 'Not enforced' }
 $mfaEvidence = if ($mfaAllUsersEnforced.Count) { "Enabled policy covering all users and all cloud apps: " + (Join-List ($mfaAllUsersEnforced | ForEach-Object { "$($_.displayName) [$(Get-CaScopeText $_)]" }) ' || ') }
@@ -3399,10 +3401,34 @@ ol.prio{list-style:none;padding:0;margin:6px 0 14px}ol.prio li{display:flex;gap:
 details.more{border:1px solid var(--line);border-radius:6px;padding:8px 12px;margin:10px 0;background:#fff}details.more summary{cursor:pointer;color:var(--blue);font-weight:bold;font-size:10.5pt}details.more[open] summary{margin-bottom:8px}hr.divider{border:0;border-top:2px solid var(--line);margin:26px 0 14px}
 .kpi.bad{border-left-color:var(--warn)}.kpi.bad .v{color:var(--warn)}.kpi.good{border-left-color:var(--good)}.kpi.good .v{color:var(--good)}.kpi.mid{border-left-color:#B8860B}.kpi.mid .v{color:#8a6508}
 .privacy{background:#eef6ee;border:1px solid #bfe0c2;border-left:5px solid var(--good);padding:10px 14px;border-radius:4px;font-size:10pt;margin:16px 0}
+.gl-overall{display:flex;flex-wrap:wrap;gap:10px 22px;align-items:center;border:1px solid var(--line);border-left:10px solid var(--blue);border-radius:10px;padding:12px 18px;margin:8px 0 6px;background:#fff}
+.gl-overall.bad{border-left-color:var(--warn);background:#fff5f5}.gl-overall.mid{border-left-color:#B8860B;background:#fffaf0}.gl-overall.good{border-left-color:var(--good);background:#f3faf4}
+.gl-overall .vlabel{font-size:9.5pt;text-transform:uppercase;letter-spacing:.08em;color:#555}.gl-overall .vword{font-size:20pt;font-weight:bold;line-height:1.1;color:var(--blue)}.gl-overall.bad .vword{color:var(--warn)}.gl-overall.mid .vword{color:#8a6508}.gl-overall.good .vword{color:var(--good)}
+.gl-kpis{margin:12px 0 10px}.kpi.na{border-left-color:#9a9a9a}.kpi.na .v{color:#555}
+.gl-tools{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:4px 0 10px}.gl-tools button{font:inherit;font-size:9.5pt;border:1px solid var(--blue);background:#fff;color:var(--blue);border-radius:4px;padding:3px 10px;cursor:pointer}.gl-tools .hint{font-size:9.5pt;color:#555;flex:1 1 320px}
+details.gl{border:1px solid var(--line);border-left:10px solid #9a9a9a;border-radius:8px;margin:0 0 8px;background:#f6f6f6;page-break-inside:avoid}
+details.gl.warn{border-left-color:var(--warn);background:#fff5f5}details.gl.mid{border-left-color:#B8860B;background:#fffaf0}details.gl.good{border-left-color:var(--good);background:#f3faf4}
+details.gl>summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:150px minmax(240px,1fr) 190px 170px 16px;gap:6px 16px;align-items:center;padding:10px 14px;border-radius:0 8px 8px 0}
+details.gl>summary::-webkit-details-marker{display:none}details.gl>summary::marker{content:''}
+details.gl>summary:hover{background:rgba(0,0,0,.035)}details.gl>summary:focus-visible{outline:2px solid var(--blue);outline-offset:-2px}
+.gl-pill{display:inline-flex;gap:6px;align-items:center;justify-content:center;border-radius:14px;padding:4px 10px;font-size:9.5pt;font-weight:bold;color:#fff;background:#6b6b6b;white-space:nowrap}
+.gl-pill.warn{background:var(--warn)}.gl-pill.mid{background:#8a6508}.gl-pill.good{background:var(--good)}
+.gl-name b{display:block;font-size:12.5pt;color:var(--ink)}.gl-name .hl{display:block;font-size:10pt;color:#222;margin-top:2px}.gl-name .nw{display:block;font-size:9.5pt;color:#555;margin-top:2px}
+.gl-cells{display:flex;flex-wrap:wrap;gap:3px}
+.gl-cell{width:22px;height:22px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;color:#fff;font-size:10pt;font-weight:bold;background:#9a9a9a}
+.gl-cell.good{background:var(--good)}.gl-cell.warn{background:var(--warn)}.gl-cell.mid{background:#B8860B}.gl-cell.info{background:#7a8aa0}
+.gl-count{font-size:9.5pt;color:#333;text-align:right}.gl-count b{display:block;font-size:13pt;color:var(--ink)}.gl-count small{display:block;color:#555;font-size:8.5pt;margin-top:2px}
+.gl-chev::before{content:'\25B8';color:var(--blue);font-size:13pt}details.gl[open] .gl-chev::before{content:'\25BE'}
+.gl-body{background:#fff;border-top:1px solid var(--line);padding:10px 14px 4px;border-radius:0 0 8px 0}.gl-body .why{font-size:10pt;color:#333;margin:0 0 8px}
+.gl-ev{font-weight:normal;color:#444;font-size:9pt;margin-top:3px}
+.gl-prio{display:inline-block;border-radius:4px;padding:1px 7px;font-size:8.5pt;font-weight:bold;color:#fff;background:#777;margin-right:6px}.gl-prio.Critical,.gl-prio.High{background:var(--warn)}.gl-prio.Medium{background:#8a6508}
+@media (max-width:1100px){details.gl>summary{grid-template-columns:150px 1fr}.gl-name{grid-column:2}.gl-cells{grid-column:1}.gl-count{text-align:left}.gl-chev{display:none}}
+@media print{.gl-tools{display:none}.gl-chev{display:none}details.gl>summary{grid-template-columns:130px 1fr 150px 110px}}
 @media print{nav,.pager{display:none}body.paged main>section{display:block}.ticketbar,button.tk,button.more,.modal{display:none}.permfull{display:block!important}main{margin:0;padding:0}section{page-break-before:always}section:first-of-type{page-break-before:avoid}table.grid thead th{position:static}.filters{display:none}details.info .tip{position:static;display:block;width:auto;box-shadow:none;margin-top:4px}details.info summary{display:none}details.info:not([open]) .tip{display:none}}
 "@
 
 $sections = @(
+    @{ Id = 'glance';       Title = 'At a Glance' },
     @{ Id = 'overview';     Title = '1. Executive Summary' },
     @{ Id = 'ioc';          Title = '2. Review These Now: Indications of Compromise' },
     @{ Id = 'summary';      Title = '3. Security Controls Summary' },
@@ -3555,7 +3581,7 @@ if ($staleDeviceCount -gt 0) { $deviceStatIssues["Stale devices (no activity in 
 
 # ---- Executive summary figures
 $controlsRated = @($script:summaryRows | Where-Object { [string]$_.Status -notmatch '^(Not available|Not collected)' })
-$controlsMet   = @($controlsRated | Where-Object { [string]$_.Status -match '^(Enabled|Enforced|Blocked|Yes|All enrolled|Restricted|Target met|None found)' })
+$controlsMet   = @($controlsRated | Where-Object { [string]$_.Status -match '^(Enabled|Enforced|Blocked|Yes|All enrolled|Restricted|Target met|None found|Replaced by Conditional Access)' })
 $findCritHigh  = @($remediationSorted | Where-Object { $_.Priority -in @('Critical', 'High') }).Count
 $findMedium    = @($remediationSorted | Where-Object { $_.Priority -eq 'Medium' }).Count
 $enabledMemberCount = @($users | Where-Object { $_.accountEnabled -and $_.userType -eq 'Member' }).Count
@@ -3610,9 +3636,9 @@ $snapshot = [ordered]@{
 }
 $previous = if ($history.Count) { $history[-1] } else { $null }
 function Get-StatusRank { param([string]$s)
-    if ($s -match '^(Enabled|Enforced|Blocked|Yes|All enrolled|Restricted|Target met|Complete|Configured|Onboarded|None found)') { return 2 }
+    if ($s -match '^(Enabled|Enforced|Blocked|Yes|All enrolled|Restricted|Target met|Complete|Configured|Onboarded|None found|Deployed|Replaced by Conditional Access)') { return 2 }
     if ($s -match '^(Not available|Not collected)') { return -1 }
-    if ($s -match '^(Partial|Allowed|All users allowed|No Windows|EOP only|No email domains|No devices onboarded|Not licensed|Guests present|In progress|\d+ to review|\d+ (assignments|policies))') { return 1 }
+    if ($s -match '^(Partial|Partly deployed|Onboarding policy in place|Licensed, deployment not verified|Allowed|All users allowed|No Windows|EOP only|No email domains|No devices onboarded|Not licensed|Guests present|In progress|\d+ to review|\d+ (assignments|policies))') { return 1 }
     return 0
 }
 function Get-JsonProp { param($obj, [string]$name) if ($null -eq $obj) { return $null } ; $p = $obj.PSObject.Properties[$name]; if ($p) { return $p.Value } ; return $null }
@@ -4170,6 +4196,131 @@ $(if (-not $exoCollected) { "<p class='empty'>Exchange Online was not collected.
 </section>
 "@
 
+$verdictChipsHtml = "<div class='chips'><span class='chip $($trend.Class)'>Trend: $($trend.Label)</span><span class='chip $(if (-not $iocCollected) { 'mid' } elseif ($iocUrgentCount) { 'bad' } else { 'good' })'>Intrusion check: $(if (-not $iocCollected) { 'not collected' } elseif ($iocUrgentCount) { "$iocUrgentCount urgent" } else { 'nothing urgent' })</span><span class='chip $(if ($measured -and $onTrack -eq $measured) { 'good' } elseif ($measured -and $onTrack * 2 -ge $measured) { 'mid' } else { 'bad' })'>Scorecard: $onTrack of $measured on track</span><span class='chip neutral'>Maturity (indicative): $maturity</span><span class='chip neutral'>Next report: $($ReportDate.AddDays(30).ToString('MMMM d, yyyy'))</span></div>"
+# ----------------------------------------------------------------------------------------------
+# At a Glance (the first page): every control from section 3 grouped into areas a board
+# recognizes. An area takes the colour of its weakest measured control; clicking it lists each
+# control with its status, evidence, change since the last report and the fix. A new control
+# must be added to an area here, or it is shown under "Other controls".
+# ----------------------------------------------------------------------------------------------
+$GlanceAreas = @(
+    @{ Key = 'threats'; Name = 'Intrusion check and logging'; Why = 'Whether an intrusion may already be under way, and whether activity is recorded so that an incident can be investigated and reported.'; Controls = @('Indications of compromise to review', 'Audit logging (unified audit log)') },
+    @{ Key = 'score'; Name = 'Microsoft Secure Score'; Why = 'Microsoft''s own measure of how much of the recommended security configuration is in place. It moves as findings are closed, so it is the simplest month-to-month trend for the board.'; Controls = @('Microsoft Secure Score') },
+    @{ Key = 'signin'; Name = 'Sign-in and MFA'; Why = 'Stops a stolen or guessed password from opening an account. Most Microsoft 365 break-ins start with a password.'; Controls = @('MFA enforced for sign-in', 'MFA registered by all users', 'Legacy authentication protocols disabled', 'Security defaults', 'Phishing-resistant MFA (passkeys) rollout', 'Temporary Access Pass (TAP) implemented') },
+    @{ Key = 'admins'; Name = 'Administrator accounts'; Why = 'An administrator can change every setting and read every mailbox, so these accounts need the strongest sign-in and the fewest holders.'; Controls = @('Phishing-resistant MFA for administrators', 'Privileged role assignments') },
+    @{ Key = 'intune'; Name = 'Device management (Intune)'; Why = 'Intune keeps computers and phones encrypted, updated and locked, and lets the institution wipe a lost device. Without it, any device with a valid password can reach bank data.'; Controls = @('Intune deployed to Windows computers', 'Intune compliance policies', 'Intune compliance policies for mobile devices', 'Intune configuration and security policies', 'Conditional Access restricts access to Entra joined or compliant devices', 'Users restricted from joining devices to Entra ID') },
+    @{ Key = 'mde'; Name = 'Endpoint protection (Defender)'; Why = 'Defender for Endpoint detects and contains attacks on computers, such as ransomware, before they spread to the rest of the network.'; Controls = @('Endpoint protection (Defender for Endpoint)') },
+    @{ Key = 'email'; Name = 'Email'; Why = 'Stops email that pretends to come from the institution, filters phishing and malware, and keeps mail from being forwarded outside without approval.'; Controls = @('Email protection (Defender for Office 365 / EOP)', 'SPF record (DNS)', 'DKIM signing (Exchange Online and DNS)', 'DMARC policy (DNS)', 'Automatic email forwarding outside the tenant') },
+    @{ Key = 'sharing'; Name = 'Data sharing and apps'; Why = 'Keeps customer data from being shared outside the institution or handed to apps that nobody approved.'; Controls = @('SharePoint and OneDrive external sharing', 'Teams guest and external access', 'User consent to applications') }
+)
+$GlanceWord  = @{ warn = 'Action needed'; mid = 'Partly in place'; good = 'In place'; na = 'Not measured'; info = 'For information' }
+$GlanceIcon  = @{ warn = '&#10006;'; mid = '&#9684;'; good = '&#10004;'; na = '&mdash;'; info = '&bull;' }
+$GlanceOrder = @{ warn = 0; mid = 1; good = 2; info = 3; na = 4 }
+function Get-GlanceShortText { param([string]$Text, [int]$Max = 200)
+    $t = ($Text -replace '\s+', ' ').Trim()
+    if ($t.Length -le $Max) { return $t }
+    $cut = $t.Substring(0, $Max); $sp = $cut.LastIndexOf(' '); if ($sp -gt ($Max / 2)) { $cut = $cut.Substring(0, $sp) }
+    return ($cut.TrimEnd(',', ';', ':', '.', ' ') + '...')
+}
+function Get-GlanceList { param($Items, [int]$Show = 2)
+    $a = @($Items); if (-not $a.Count) { return '' }
+    $t = (@($a | Select-Object -First $Show | ForEach-Object { "$($_.Control) ($($_.Status))" }) -join '; ')
+    if ($a.Count -gt $Show) { $t += "; and $($a.Count - $Show) more" }
+    return $t
+}
+$glFinding = @{}; foreach ($f in $remediationSorted) { if (-not $glFinding.ContainsKey([string]$f.Finding)) { $glFinding[[string]$f.Finding] = $f } }
+$glChange = @{}; foreach ($cr in $changeRows) { if ($cr['Area'] -eq 'Control') { $glChange[[string]$cr['Change']] = $cr } }
+$glItems = @{}
+foreach ($row in $script:summaryRows) {
+    $st = [string]$row.Status; $kind = Get-StatusKind $st; $fnd = $glFinding[[string]$row.Control]
+    # Intune checks read "Not available" when Intune is not licensed: that is a missing control, not a gap in measurement.
+    if ($kind -eq 'na' -and $script:HasIntune -eq $false -and $row.Control -like 'Intune *') { $st = 'Not licensed (Intune)'; $kind = 'warn'; $fnd = $glFinding['Intune is not licensed'] }
+    $glItems[[string]$row.Control] = [pscustomobject]@{ Control = [string]$row.Control; Status = $st; Kind = $kind; Evidence = [string]$row.Evidence; Section = [string]$row.Section; Finding = $fnd }
+}
+# Device management and endpoint protection lead with what is deployed, in words, because "not deployed" is the finding.
+$glHeadline = @{}; $glCovers = @{}
+$glHeadline['intune'] = if ($script:HasIntune -eq $false) { 'Intune is not licensed: computers and phones are not managed, and nothing checks that a device is safe before it opens bank data.' }
+    elseif (Get-GraphFailure 'Intune managed devices') { 'Intune could not be read in this run, so device management was not measured.' }
+    elseif ($winEntra.Count -eq 0) { 'No Windows computers are registered in Entra ID, so Intune has nothing to manage yet.' }
+    elseif ($winManaged.Count -eq 0) { "Intune is licensed but not deployed: none of the $($winEntra.Count) Windows computers is managed." }
+    elseif ($winManaged.Count -lt $winEntra.Count) { "Intune manages $($winManaged.Count) of $($winEntra.Count) Windows computers; the other $($winEntra.Count - $winManaged.Count) are not managed." }
+    else { "Intune manages all $($winEntra.Count) Windows computers." }
+$glCovers['intune'] = if ($script:HasIntune -eq $false) { @($glItems.Keys | Where-Object { $_ -like 'Intune *' }) } else { @('Intune deployed to Windows computers') }
+$glHeadline['mde'] = switch -Regex ($mdeStatus) {
+    '^Not licensed'                  { 'Not licensed: computers have no Microsoft detection and response. If another product protects them, record it in the minutes.'; break }
+    '^Licensed, setup not finished'  { 'Licensed, but Defender has not been switched on, so no computer is protected.'; break }
+    '^Licensed, not assigned'        { 'Licensed, but the licences are not assigned, so computers are almost certainly not protected.'; break }
+    '^Licensed, not deployed'        { "Licensed but not deployed: no computer reports to Defender$(if ($mdeEligible.Count) { ", although $($mdeEligible.Count) should" })."; break }
+    '^Licensed, no onboarding'       { 'Licensed, but Intune has no policy that onboards computers to Defender, so they are probably not protected.'; break }
+    '^Onboarding policy'             { 'An Intune policy onboards computers to Defender; which computers actually report could not be confirmed.'; break }
+    '^Licensed, deployment'          { 'Licensed; whether computers are onboarded could not be confirmed.'; break }
+    '^Partly deployed'               { "Partly deployed: $mdeCoverageText."; break }
+    '^Attention needed'              { "Deployed, but some computers are at high risk or have stopped reporting ($mdeCoverageText)."; break }
+    default                          { "Deployed: $mdeCoverageText." }
+}
+$glCovers['mde'] = @('Endpoint protection (Defender for Endpoint)')
+$glHeadline['score'] = if ($null -eq $scoreCurrent) { 'Secure Score could not be read in this run.' }
+    elseif ($scoreCurrent -ge $scoreTarget) { "$scoreCurrent of $scoreMax points ($scorePct%), at or above the $TargetScorePercent% goal." }
+    else { "$scoreCurrent of $scoreMax points ($scorePct%). The goal is $TargetScorePercent%, $scoreGap points away; section 4 lists the actions that close the gap." }
+$glCovers['score'] = @('Microsoft Secure Score')
+$glAreaList = New-Object System.Collections.Generic.List[object]
+foreach ($a in $GlanceAreas) { $glAreaList.Add($a) }
+$glMapped = @($GlanceAreas | ForEach-Object { $_.Controls })
+$glOther = @($script:summaryRows | Where-Object { $glMapped -notcontains [string]$_.Control } | ForEach-Object { [string]$_.Control })
+if ($glOther.Count) { $glAreaList.Add(@{ Key = 'other'; Name = 'Other controls'; Why = 'Controls not yet grouped into an area on this page; section 3 explains each one.'; Controls = $glOther }) }
+$glTotals = @{ warn = 0; mid = 0; good = 0; na = 0; info = 0 }
+foreach ($it in $glItems.Values) { $glTotals[$it.Kind]++ }
+$glanceRowsHtml = New-Object System.Text.StringBuilder
+foreach ($a in $glAreaList) {
+    $glPos = @{}; $p = 0; foreach ($c in @($a.Controls)) { $glPos[[string]$c] = $p; $p++ }
+    $items = @(@($a.Controls) | ForEach-Object { $glItems[[string]$_] } | Where-Object { $_ } | Sort-Object @{ Expression = { $GlanceOrder[$_.Kind] } }, @{ Expression = { $glPos[$_.Control] } })
+    if (-not $items.Count) { continue }
+    $kinds = @($items | ForEach-Object { $_.Kind })
+    $areaKind = if ($kinds -contains 'warn') { 'warn' } elseif ($kinds -contains 'mid') { 'mid' } elseif ($kinds -contains 'good') { 'good' } else { 'na' }
+    $nGood = @($kinds | Where-Object { $_ -eq 'good' }).Count
+    $nRated = @($kinds | Where-Object { $_ -in @('good', 'warn', 'mid') }).Count
+    $nNa = @($kinds | Where-Object { $_ -eq 'na' }).Count
+    $covers = @($glCovers[$a.Key])
+    $failing = @($items | Where-Object { $_.Kind -in @('warn', 'mid') -and $covers -notcontains $_.Control })
+    $hl = if ($glHeadline.ContainsKey($a.Key)) { $glHeadline[$a.Key] }
+          elseif ($failing.Count) { "Needs work: $(Get-GlanceList $failing)." }
+          elseif ($nRated) { $(if ($nNa) { 'Every control that could be measured is in place.' } else { 'Every control is in place.' }) }
+          else { 'Not measured in this run: a licence, a permission or a skipped step. Section 3 says which.' }
+    $also = if ($glHeadline.ContainsKey($a.Key) -and $failing.Count) { "Also needs work: $(Get-GlanceList $failing)." } else { '' }
+    $up = @($items | Where-Object { $glChange.ContainsKey($_.Control) -and $glChange[$_.Control]['Direction'] -eq 'Improved' }).Count
+    $down = @($items | Where-Object { $glChange.ContainsKey($_.Control) -and $glChange[$_.Control]['Direction'] -eq 'Regressed' }).Count
+    $trendTxt = if (-not $previous) { 'First report' } elseif ($up -or $down) { ((@($(if ($up) { "$up better" }), $(if ($down) { "$down worse" })) | Where-Object { $_ }) -join ', ') + ' since last report' } else { 'No change since last report' }
+    $countHtml = if ($nRated) { "<b>$nGood of $nRated</b>in place" } else { '<b>&mdash;</b>not measured' }
+    $cells = (@($items | ForEach-Object { "<span class='gl-cell $($_.Kind)' title='$(HtmlEnc "$($_.Control): $($_.Status)")'>$($GlanceIcon[$_.Kind])</span>" }) -join '')
+    $trs = foreach ($it in $items) {
+        $anchor = $SectionAnchors[$it.Section]; if (-not $anchor) { $anchor = 'summary' }
+        $ch = $glChange[$it.Control]
+        $chHtml = if (-not $previous) { '<td>First report</td>' }
+                  elseif ($ch) { "<td class='$(switch ([string]$ch['Direction']) { 'Improved' { 'good' } 'Regressed' { 'warn' } default { 'mid' } })'>$(HtmlEnc $ch['Direction'])<div class='gl-ev'>was: $(HtmlEnc $ch['Before'])</div></td>" }
+                  else { '<td>No change</td>' }
+        $fix = if ($it.Finding) { "<span class='gl-prio $($it.Finding.Priority)'>$(HtmlEnc $it.Finding.Priority)</span>$(HtmlEnc $it.Finding.Phase)<br><a href='#rem-$($it.Finding.Ref)'>Steps to fix ($($it.Finding.Ref))</a>" }
+               elseif ($it.Kind -eq 'good') { 'Nothing to do; checked again next month.' }
+               elseif ($it.Kind -eq 'na') { 'The evidence says why it was not measured.' }
+               elseif ($it.Control -eq 'Microsoft Secure Score') { "Work the Secure Score actions in <a href='#remediation'>section 4</a>." }
+               elseif ($it.Kind -eq 'info') { 'For review; no pass or fail.' }
+               else { 'Review the evidence.' }
+        "<tr><td><span class='st $($it.Kind)'>$($GlanceIcon[$it.Kind])</span><span class='stt $($it.Kind)'>$($GlanceWord[$it.Kind])</span></td><td><b>$(HtmlEnc $it.Control)</b></td><td class='$($it.Kind)'>$(HtmlEnc $it.Status)$(if ($it.Evidence) { "<div class='gl-ev'>$(HtmlEnc (Get-GlanceShortText $it.Evidence))</div>" })</td>$chHtml<td>$fix<div class='gl-ev'><a href='#$anchor'>Evidence: $(HtmlEnc $it.Section)</a></div></td></tr>"
+    }
+    [void]$glanceRowsHtml.Append("<details class='gl $areaKind' id='gl-$($a.Key)'><summary><span class='gl-pill $areaKind'><span aria-hidden='true'>$($GlanceIcon[$areaKind])</span>$($GlanceWord[$areaKind])</span><span class='gl-name'><b>$(HtmlEnc $a.Name)</b><span class='hl'>$(HtmlEnc $hl)</span>$(if ($also) { "<span class='nw'>$(HtmlEnc $also)</span>" })</span><span class='gl-cells' aria-hidden='true'>$cells</span><span class='gl-count'>$countHtml<small>$(HtmlEnc $trendTxt)</small></span><span class='gl-chev' aria-hidden='true'></span></summary>")
+    [void]$glanceRowsHtml.Append("<div class='gl-body'><p class='why'><b>Why it matters:</b> $(HtmlEnc $a.Why)</p><table class='grid gl-tbl'><thead><tr><th style='width:15%'>Result</th><th style='width:21%'>Control</th><th>Status and evidence</th><th style='width:13%'>Since last report</th><th style='width:21%'>What to do</th></tr></thead><tbody>$($trs -join '')</tbody></table></div></details>")
+}
+$glanceSectionHtml = @"
+<section id='glance'><h2>At a Glance</h2>
+<p class='audience'>Where $(HtmlEnc $ClientLabel) stands on $($ReportDate.ToString('MMMM d, yyyy')), area by area. Each area takes the colour of its weakest control: red when at least one control needs action, amber when one is only partly in place, green when every measured control is in place, grey when nothing could be measured. Click an area to see each control, what changed since the last report and the steps to fix it.</p>
+<div class='gl-overall $($verdict.Class)'><div><div class='vlabel'>Overall</div><div class='vword'>$($verdict.Label)</div></div>$verdictChipsHtml</div>
+<div class='kpis gl-kpis'><div class='kpi bad'><div class='v'>$($glTotals.warn)</div><div class='l'>&#10006; controls need action</div></div><div class='kpi mid'><div class='v'>$($glTotals.mid)</div><div class='l'>&#9684; partly in place</div></div><div class='kpi good'><div class='v'>$($glTotals.good)</div><div class='l'>&#10004; in place</div></div><div class='kpi na'><div class='v'>$($glTotals.na)</div><div class='l'>&mdash; not measured</div></div></div>
+<div class='gl-tools'><button type='button' id='glOpen'>Show every control</button><button type='button' id='glClose'>Hide them</button><span class='hint'>$(@($glItems.Keys).Count) controls in $($glAreaList.Count) areas. Section 3 (<a href='#summary'>Security Controls Summary</a>) has the full evidence; section 4 (<a href='#remediation'>Remediation Plan</a>) has the fixes in priority order.</span></div>
+$($glanceRowsHtml.ToString())
+<p class='legend'><span class='st good'>&#10004;</span> In place &nbsp; <span class='st mid'>&#9684;</span> Partly in place &nbsp; <span class='st warn'>&#10006;</span> Action needed &nbsp; <span class='st na'>&mdash;</span> Not measured (licence, permission or a skipped step) &nbsp; <span class='st info'>&bull;</span> For information. Section 3 uses the same marks with the words Pass, Partial and Action needed.</p>
+<p class='meta'>Next: the <a href='#overview'>Executive Summary</a> (verdict, headlines, top priorities, scorecard, progress and the plan).</p>
+</section>
+"@
+
 $html = @"
 <!DOCTYPE html>
 <html lang='en'><head><meta charset='utf-8'><title>$(HtmlEnc $ClientLabel) - Microsoft 365 Audit Evidence</title><style>$css</style></head>
@@ -4177,10 +4328,11 @@ $html = @"
 <nav>$($navHtml.ToString())</nav>
 <main>
 <div class='pager'><button type='button' id='prevSec' title='Previous section'>&larr; Previous</button><button type='button' id='nextSec' title='Next section'>Next &rarr;</button><span class='title' id='pagerTitle'></span><span class='pos' id='pagerPos'></span><button type='button' id='viewToggle' title='Switch between one section per page and the whole report on one page'>Show all sections</button></div>
+$glanceSectionHtml
 <section id='overview'><h2>1. Executive Summary</h2>
 <p class='audience'>Prepared for the board and IT committee of $(HtmlEnc $ClientLabel) from a read-only review of the Microsoft 365 environment on $($ReportDate.ToString('MMMM d, yyyy')). One page answers three questions: are we secure, are we improving, what needs a decision. The detail behind every number follows for the security officer, the IT provider, auditors and examiners.</p>
 <div class='verdict $($verdict.Class)'><div class='vlabel'>Overall</div><div class='vword'>$($verdict.Label)</div><p>$($verdict.Text)</p>
-<div class='chips'><span class='chip $($trend.Class)'>Trend: $($trend.Label)</span><span class='chip $(if (-not $iocCollected) { 'mid' } elseif ($iocUrgentCount) { 'bad' } else { 'good' })'>Intrusion check: $(if (-not $iocCollected) { 'not collected' } elseif ($iocUrgentCount) { "$iocUrgentCount urgent" } else { 'nothing urgent' })</span><span class='chip $(if ($measured -and $onTrack -eq $measured) { 'good' } elseif ($measured -and $onTrack * 2 -ge $measured) { 'mid' } else { 'bad' })'>Scorecard: $onTrack of $measured on track</span><span class='chip neutral'>Maturity (indicative): $maturity</span><span class='chip neutral'>Next report: $($ReportDate.AddDays(30).ToString('MMMM d, yyyy'))</span></div></div>
+$verdictChipsHtml</div>
 <div class='kpis'>$($kpiHtml.ToString())</div>
 <div class='eos'>
 <div class='eos-col'>
@@ -4433,7 +4585,12 @@ $shareSectionHtml
       document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); document.body.removeChild(a); },500); flash(csv,'Downloaded');
     });
   }
-  window.addEventListener('beforeprint', function(){ document.querySelectorAll('details.steps, details.more').forEach(function(d){ d.setAttribute('open',''); }); });
+  window.addEventListener('beforeprint', function(){ document.querySelectorAll('details.steps, details.more, details.gl').forEach(function(d){ d.setAttribute('open',''); }); });
+  // At a Glance: show or hide the controls of every area at once
+  function setGlance(open){ document.querySelectorAll('details.gl').forEach(function(d){ if(open){ d.setAttribute('open',''); } else { d.removeAttribute('open'); } }); }
+  var glOpen=document.getElementById('glOpen'), glClose=document.getElementById('glClose');
+  if(glOpen) glOpen.addEventListener('click', function(){ setGlance(true); });
+  if(glClose) glClose.addEventListener('click', function(){ setGlance(false); });
   // "Show all" dialogs for long cells (permissions): the full content sits hidden next to the button
   var moreModal=document.getElementById('moreModal'), moreBody=document.getElementById('moreBody'), moreTitle=document.getElementById('moreTitle'), moreClose=document.getElementById('moreClose');
   function closeMore(){ if(!moreModal||moreModal.hasAttribute('hidden')) return; moreModal.setAttribute('hidden',''); document.body.classList.remove('noscroll'); }
@@ -4462,7 +4619,7 @@ $shareSectionHtml
     document.body.classList.toggle('paged', paged);
     if(viewToggle) viewToggle.textContent = paged?'Show all sections':'One section at a time';
     if(prevBtn) prevBtn.style.display=paged?'':'none'; if(nextBtn) nextBtn.style.display=paged?'':'none'; if(pagerPos) pagerPos.style.display=paged?'':'none';
-    if(paged){ var id=(location.hash||'#overview').substring(1); var sec=sectionFor(id)||sections[0]; showSection(sec,id); }
+    if(paged){ var id=(location.hash||'#glance').substring(1); var sec=sectionFor(id)||sections[0]; showSection(sec,id); }
     else { sections.forEach(function(s){ s.classList.add('active'); }); if(pagerTitle) pagerTitle.textContent='Whole report on one page'; navLinks.forEach(function(a){ a.classList.remove('active'); }); }
   }
   document.addEventListener('click', function(e){

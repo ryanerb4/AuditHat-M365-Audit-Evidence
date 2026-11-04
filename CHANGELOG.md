@@ -6,6 +6,26 @@ the report footer.
 
 ## 2026.11.04
 
+- New first page, **At a Glance**: the overall verdict, four count tiles and one row per area
+  (Intrusion check and logging, Microsoft Secure Score, Sign-in and MFA, Administrator accounts,
+  Device management (Intune), Endpoint protection (Defender), Email, Data sharing and apps). Each
+  row is red, amber, green or grey by its weakest control and shows a headline, a square per
+  control, "N of M in place" and the movement since the last report. Clicking a row lists its
+  controls with result, status, evidence, change, priority, phase and links to the fix steps and
+  the evidence; **Show every control** expands them all, and printing expands them. Intune and
+  Defender rows say in words whether each is licensed and deployed, and Intune checks that could
+  not run because Intune is not licensed count as Action needed instead of Not measured. The report
+  now opens on this page.
+- Security defaults reads **Replaced by Conditional Access** (Pass) when security defaults are off
+  and an enabled Conditional Access policy requires MFA for all users and all cloud apps, which is
+  the recommended setup; it previously showed Action needed. The next report's change log lists it
+  once as Improved.
+- "Intune configuration and security policies" with **0 policies** now shows Action needed (it
+  showed Pass while the remediation plan listed it as a finding).
+- The change log ranks the Defender for Endpoint statuses (Deployed, Partly deployed, Onboarding
+  policy in place, Licensed, deployment not verified) so a move between them counts as Improved or
+  Regressed instead of Changed.
+
 - Defender for Endpoint shows a clear deployment status in section 3 and in a new "Endpoint
   protection" block in section 16: Not licensed, Licensed, not deployed, Partly deployed,
   Attention needed, Deployed, or Not checked (permission not approved, access refused, device-code

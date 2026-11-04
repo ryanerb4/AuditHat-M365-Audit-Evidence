@@ -33,7 +33,7 @@ its existing staff and IT provider, and that auditors and examiners recognise as
 | **Monthly** | Security officer or IT provider / MSP | Run the script (10 to 30 minutes). Work section 2 (review these now: indications of compromise) the same day. Turn the Remediation Plan into tickets (Copy ticket / CSV) and assign owners. File the report in the evidence folder; the history file updates itself |
 | **Monthly, next run** | Same | "Progress since last report" shows what closed, what regressed and what is new. Chase open tickets |
 | **Quarterly** | IT steering committee | Review the Executive Summary, the Roadmap and the Governance table; approve phases, owners, licences and budget; record decisions in minutes. Record the review in the minutes |
-| **At least annually, and after any incident** | Board (or its risk / audit committee) | Receive the Executive Summary (narrative, tiles, trend charts, progress). Record it in the board minutes |
+| **At least annually, and after any incident** | Board (or its risk / audit committee) | Receive At a Glance and the Executive Summary (narrative, tiles, trend charts, progress). Record it in the board minutes |
 | **Before and during an exam or audit** | Auditor / examiner | Section 3 as the control test, section 5 for the framework mapping, the history for the trend, sections 6 to 19 as evidence. The minutes show governance |
 
 Keep every monthly report. Together with the history file they are the evidence that controls are
@@ -42,8 +42,11 @@ the three things examiners ask for under FFIEC, NCUA and GLBA Safeguards expecta
 
 Who it is for:
 
-- **Board members:** the opening paragraph, the tiles and the trend charts answer "are we secure, are
-  we improving, is there a plan" without any Microsoft 365 knowledge.
+- **Board members:** the first page, **At a Glance**, shows each area (sign-in, administrators, device
+  management, endpoint protection, email, sharing, logging, Secure Score) in green, amber or red;
+  a click lists the controls behind the colour. The opening paragraph, the tiles and the trend
+  charts that follow answer "are we secure, are we improving, is there a plan" without any
+  Microsoft 365 knowledge.
 - **IT committee members:** the Roadmap lays the plan out by phase with owners and effort, and the
   Governance table shows cadence, progress and the next review date, so the committee can decide
   and record decisions.
@@ -71,8 +74,9 @@ Entra Connect sync status and links to the companion from the overview and the f
 
 ## Navigating the report
 
-The report opens as a set of pages: the left navigation shows one section at a time, with Previous
-and Next buttons and a "Section n of 19" marker in a toolbar that stays at the top; the section heading
+The report opens as a set of pages, starting with **At a Glance**: the left navigation shows one
+section at a time, with Previous and Next buttons and a "Section n of 20" marker in a toolbar that
+stays at the top; the section heading
 stays pinned under it while you scroll. Every link inside the report (a finding
 in the roadmap, "Progress since last report", a situation-table detail) opens the right page and
 scrolls to the item. **Show all sections** switches to the whole report on one long page for
@@ -433,6 +437,7 @@ without that person needing to understand PowerShell or Microsoft Graph.
 
 | # | Section | Source | What it answers |
 |---|---------|--------|-----------------|
+| | At a Glance | computed from section 3, the remediation plan and the history file | The first page. The overall verdict and its chips, four tiles (controls that need action, partly in place, in place, not measured), then one row per area: **Intrusion check and logging**, **Microsoft Secure Score**, **Sign-in and MFA**, **Administrator accounts**, **Device management (Intune)**, **Endpoint protection (Defender)**, **Email**, **Data sharing and apps**. Each row is red, amber, green or grey by its weakest control, with a one-line headline, a square per control, "N of M in place" and the movement since the last report. Device management and endpoint protection say in words whether Intune and Defender are licensed and deployed (for example "Intune is not licensed", "Licensed but not deployed: no computer reports to Defender"); Intune checks that could not run because Intune is not licensed count as Action needed, not Not measured. Click a row, or **Show every control**, to list each control with its result, status and evidence, change since the last report, priority and phase, and links to the fix steps (section 4) and the evidence. Printing expands every row |
 | 1 | Executive Summary | organization, subscribedSkus, security/secureScores, history file, computed | **Verdict** with trend, compromise-review, scorecard and maturity chips; four tiles; **Headlines**; **Top priorities**; **Scorecard** (goal, actual, on/off track, movement); **Rocks** (90-day objectives with owner, due, status); **Issues list** (decisions, repeat findings, coverage gaps); progress charts with every change folded; plan by phase with target dates; GLBA board-report mapping; governance table. Then the narrative paragraph and KPI tiles (Secure Score vs target, controls met, Critical/High and Medium findings, users without MFA, stale users, Global Administrators, devices, devices not in Intune, stale devices), top five priorities, **Progress since last report** (change log of controls, findings and counts versus the previous run, Secure Score trend chart with target line, open findings by priority chart), privacy statement, tenant details with bulleted licensed capabilities, directory synchronization status (Entra Connect, AD domains, sync server), verified domains table, subscriptions |
 | 2 | Review These Now: Possible Indications of Compromise | auditLogs/directoryAudits (targeted activities), auditLogs/signIns (P1), identityProtection (P2), applications and servicePrincipals, Exchange mailboxes, inbox rules, permissions and transport rules, Search-UnifiedAuditLog (sharing, downloads, mailbox changes), Get-SafeLinksDetailReport | A plain-language **situation table** (Urgent / Review / Clear / Not checked) covering: mail forwarded outside the organization, inbox rules that hide or delete mail, known-abused OAuth apps (PerfectData Software, eM Client, rclone, Supermailer and others) and unverified apps with mail or file access, new apps and credentials, Anyone links and external sharing, unusual download or sync volume, mailbox rule and permission changes in the audit log, malicious link clicks, domain/federation changes, users at risk, legacy sign-ins, password sprays, multi-country sign-ins, MFA denials, role and MFA changes, new accounts and delegates, mailbox auditing. Detail tables behind every row |
 | 3 | Security Controls Summary | computed from everything below | One row per control with a **Result** badge (Pass / Partial: review / Action needed / Not measured), filters by result, (MFA, legacy auth, device access, Intune, TAP, device join, forwarding, consent, **email authentication**, **email protection**, **endpoint protection**, Secure Score, privileged roles): Status, Evidence, link to detail. Only **enabled** CA policies count as enforced |

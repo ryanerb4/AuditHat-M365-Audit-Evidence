@@ -37,6 +37,7 @@ map that future work is built from.
 | Flagging | `_issues` hashtables added to rows, `$SummaryIssueMap` for summary rows |
 | Executive figures | `Add-Kpi`, `$execNarrative` |
 | History | `<Client> - history.json`: snapshot, diff vs previous (`$changeRows`), SVG charts (`New-SvgTrendChart`, `New-SvgGroupedBars`) |
+| At a Glance | Just before the `$html` template: `$GlanceAreas` (area key, name, why it matters, control names from `Add-SummaryRow`), `$glItems` (status kind per control; Intune `Not available` becomes `Not licensed (Intune)` / warn when Intune is not licensed), `$glHeadline` / `$glCovers` (worded headlines for Intune, Defender and Secure Score), `$glanceSectionHtml` (`<details class='gl'>` per area). `$verdictChipsHtml` is shared with the Executive Summary verdict. Script: `glOpen` / `glClose`, `details.gl` opened before print, default page `#glance` |
 | Rendering | `$sections` (nav), `$SectionAnchors`, `$css`, section here-strings (`$iocSectionHtml`, `$frameworkSectionHtml`, `$mdmSection`, `$teamsSectionHtml`, `$spoSectionHtml`), `$governanceKv`, the main `$html` here-string, the `<script>` block (filters, info panels, ticket copy/CSV, open step lists before print) |
 | Output | HTML written with UTF-8, ticket CSV, history saved, report opened unless `-NoOpen`, optional Word documents |
 
@@ -44,7 +45,7 @@ map that future work is built from.
 
 - **Status words matter.** The summary table colours a status by regex: green for
   `Enabled|Enforced|Blocked|Yes|All enrolled|Restricted|Target met|Complete|Configured|Onboarded|None found`,
-  amber for `Partial|Partly deployed|Allowed|...|Guests present|N to review`, red for `Disabled|Not enforced|...|Licensed, not deployed|N urgent|Anyone links`, green includes `Deployed`; `Not checked...` is grey.
+  amber for `Partial|Partly deployed|Allowed|...|Guests present|N to review`, red for `Disabled|Not enforced|...|Licensed, not deployed|N urgent|Anyone links|0 policies`, green includes `Deployed`, `Replaced by Conditional Access` and `N policies` with N of 1 or more; `Not checked...` is grey.
   `Get-StatusRank` uses the same families to decide Improved / Regressed in the change log. A new
   status word must be added to both places, or it renders grey and never counts as a change.
 - **Rows are ordered hashtables.** Hidden keys: `_tags` (space-separated filter tags) and `_issues`
@@ -81,6 +82,7 @@ Add-SummaryRow 'My control name' $thingStatus "Why we say so: $($thing.detail)" 
 # 4. explain (info icon) -> $IssueCatalog['my-issue'] = @{ Title=..; Why=..; Fix=.. }; $SummaryIssueMap['My control name'] = 'my-issue'
 # 5. finding -> add to $remediationGuides: @{ Control='My control name'; Bad='^Disabled'; Priority='High'; Action='...'; Url='https://...' }
 # 6. (optional) section -> $sections entry, $SectionAnchors['Section title'] = 'id', <section id='id'> in the template
+#    and add the control name to an area's Controls in $GlanceAreas (otherwise At a Glance shows it under "Other controls")
 # 7. document -> README table + CHANGELOG + $ScriptVersion + this file
 ```
 
