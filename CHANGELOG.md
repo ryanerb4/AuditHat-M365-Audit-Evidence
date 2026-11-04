@@ -6,6 +6,15 @@ the report footer.
 
 ## 2026.11.04
 
+- Defender for Endpoint shows a clear deployment status in section 3 and in a new "Endpoint
+  protection" block in section 16: Not licensed, Licensed, not deployed, Partly deployed,
+  Attention needed, Deployed, or Not checked (permission not approved, access refused, device-code
+  sign-in), with what it means and what to do. The licensed plan is named (Defender for Business,
+  Plan 1, Plan 2). Coverage compares onboarded devices with active Windows and macOS devices in
+  Entra ID and Intune and lists the ones not onboarded. Devices only discovered on the network are
+  no longer counted as onboarded. When Defender could not be checked, the first page lists it as a
+  coverage gap. The approval link now requests exactly the three Defender permissions.
+
 - Saved sign-ins are kept per tenant when `-TenantId` is given, so auditing a second organization
   from the same PC no longer reuses the first organization's sign-in. A saved sign-in for a different
   named tenant is ignored with a warning.

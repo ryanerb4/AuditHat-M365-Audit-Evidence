@@ -43,7 +43,7 @@ map that future work is built from.
 
 - **Status words matter.** The summary table colours a status by regex: green for
   `Enabled|Enforced|Blocked|Yes|All enrolled|Restricted|Target met|Complete|Configured|Onboarded|None found`,
-  amber for `Partial|Allowed|...|Guests present|N to review`, red for `Disabled|Not enforced|...|N urgent|Anyone links`.
+  amber for `Partial|Partly deployed|Allowed|...|Guests present|N to review`, red for `Disabled|Not enforced|...|Licensed, not deployed|N urgent|Anyone links`, green includes `Deployed`; `Not checked...` is grey.
   `Get-StatusRank` uses the same families to decide Improved / Regressed in the change log. A new
   status word must be added to both places, or it renders grey and never counts as a change.
 - **Rows are ordered hashtables.** Hidden keys: `_tags` (space-separated filter tags) and `_issues`

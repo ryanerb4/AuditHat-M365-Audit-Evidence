@@ -758,10 +758,10 @@ $IssueCatalog = @{
 # One rule for every status word in the report: good (pass), warn (action needed), mid (partial / review), na (not measured), info (neutral count)
 function Get-StatusKind { param($Status)
     $v = [string]$Status
-    if ($v -match '^(Enabled|Enforced|Blocked|Yes|All enrolled|Restricted|Target met|Complete|Configured|Onboarded|None found|Clear|On track|Done|Pass|True|Compliant|Required|Improved|Resolved|Low|On$|Active|Succeeded|success|Verified|\d+ polic)') { return 'good' }
+    if ($v -match '^(Enabled|Enforced|Deployed|Blocked|Yes|All enrolled|Restricted|Target met|Complete|Configured|Onboarded|None found|Clear|On track|Done|Pass|True|Compliant|Required|Improved|Resolved|Low|On$|Active|Succeeded|success|Verified|\d+ polic)') { return 'good' }
     if ($v -match '^(Not available|Not collected|Not measured|Not checked|Not scanned|Not applicable|Unknown|n/a|Baseline|Skipped)') { return 'na' }
-    if ($v -match '^(Disabled|Not enforced|Not blocked|No$|Not deployed|None$|None \(|Not started|Active external|Allowed by policy|Below target|Missing|Licensed, not configured|Attention needed|\d+ urgent|Anyone links|Off track|Urgent|False|Off$|Regressed|New$|High|Critical|Not configured|Not published|Not licensed|Slipping|Failed|Inactive|Impaired|Noncompliant|Not registered|Action needed|enabledForReportingButNotEnforced)') { return 'warn' }
-    if ($v -match '^(Partial|Allowed|All users allowed|No Windows|EOP only|No email domains|No devices onboarded|Guests present|In progress|\d+ to review|Review|Changed|Medium|Holding|Soft fail|Neutral|One selector|none \(monitor|quarantine|reportOnly|Pass all)') { return 'mid' }
+    if ($v -match '^(Disabled|Not enforced|Not blocked|No$|Not deployed|None$|None \(|Not started|Active external|Allowed by policy|Below target|Missing|Licensed, not configured|Licensed, not deployed|Attention needed|\d+ urgent|Anyone links|Off track|Urgent|False|Off$|Regressed|New$|High|Critical|Not configured|Not published|Not licensed|Slipping|Failed|Inactive|Impaired|Noncompliant|Not registered|Action needed|enabledForReportingButNotEnforced)') { return 'warn' }
+    if ($v -match '^(Partial|Partly deployed|Allowed|All users allowed|No Windows|EOP only|No email domains|No devices onboarded|Guests present|In progress|\d+ to review|Review|Changed|Medium|Holding|Soft fail|Neutral|One selector|none \(monitor|quarantine|reportOnly|Pass all)') { return 'mid' }
     if ($v -match '^(\d+ assignments|\d+ \/ \d+|Info)') { return 'info' }
     return 'info'
 }
@@ -944,12 +944,13 @@ $script:HasEntraP2 = [bool]@($servicePlanNames | Where-Object { $_ -eq 'AAD_PREM
 $script:HasDefenderP1 = [bool]@($servicePlanNames | Where-Object { $_ -match '^ATP_ENTERPRISE|^THREAT_INTELLIGENCE' }).Count
 $script:HasDefenderP2 = [bool]@($servicePlanNames | Where-Object { $_ -match '^THREAT_INTELLIGENCE' }).Count
 $script:HasMDE        = [bool]@($servicePlanNames | Where-Object { $_ -match '^WINDEFATP|^MDE_SMB|^DEFENDER_ENDPOINT|^MDE_LITE|Microsoft_Defender_For_Endpoint' }).Count
+$script:MdePlan       = if (@($servicePlanNames | Where-Object { $_ -match '^WINDEFATP' }).Count) { 'Defender for Endpoint Plan 2' } elseif (@($servicePlanNames | Where-Object { $_ -match '^MDE_SMB' }).Count) { 'Defender for Business' } elseif (@($servicePlanNames | Where-Object { $_ -match '^MDE_LITE' }).Count) { 'Defender for Endpoint Plan 1' } elseif ($script:HasMDE) { 'Defender for Endpoint' } else { '' }
 $tenantKv['Licensed capabilities'] = @(
     "Microsoft Intune (device management): $(if ($script:HasIntune) { 'Licensed' } else { 'Not licensed' })",
     "Entra ID P1 (Conditional Access, MFA registration report, sign-in logs): $(if ($script:HasEntraP1) { 'Licensed' } else { 'Not licensed' })",
     "Entra ID P2 (Privileged Identity Management, Identity Protection): $(if ($script:HasEntraP2) { 'Licensed' } else { 'Not licensed' })",
     "Defender for Office 365 (Safe Links, Safe Attachments, impersonation protection): $(if ($script:HasDefenderP2) { 'Licensed (Plan 2)' } elseif ($script:HasDefenderP1) { 'Licensed (Plan 1)' } else { 'Not licensed (Exchange Online Protection only)' })",
-    "Defender for Endpoint / Defender for Business (endpoint detection and response): $(if ($script:HasMDE) { 'Licensed' } else { 'Not licensed' })"
+    "Defender for Endpoint / Defender for Business (endpoint detection and response): $(if ($script:HasMDE) { "Licensed ($script:MdePlan)" } else { 'Not licensed' })"
 )
 $domainRows = foreach ($d in (@($org.verifiedDomains) | Sort-Object @{ Expression = { -not $_.isDefault } }, name)) {
     [ordered]@{ 'Domain' = $d.name; 'Default' = $(if ($d.isDefault) { 'Yes' } else { '' }); 'Initial (.onmicrosoft.com)' = $(if ($d.isInitial) { 'Yes' } else { '' }); 'Type' = $d.type; 'Capabilities' = $d.capabilities }
@@ -2026,7 +2027,9 @@ $dmarcStatus = Get-EmailAuthStatus $dmarcBad { $_['DMARC policy'] -ne 'Missing' 
 # ----------------------------------------------------------------------------------------------
 # Defender for Endpoint (separate API; delegated token for the same user, only after a browser sign-in)
 # ----------------------------------------------------------------------------------------------
-$mdeRows = @(); $mdeKv = [ordered]@{}; $mdeCollected = $false; $mdeNote = ''
+$mdeRows = @(); $mdeKv = [ordered]@{}; $mdeCollected = $false; $mdeNote = ''; $mdeCheck = ''
+# Admin consent for exactly the three Defender permissions; works even when the app registration does not list them.
+$mdeConsentUrl = "https://login.microsoftonline.com/$($ctx.TenantId)/v2.0/adminconsent?client_id=$($script:GraphClientId)&redirect_uri=http://localhost&scope=https://api.securitycenter.microsoft.com/Machine.Read%20https://api.securitycenter.microsoft.com/Software.Read%20https://api.securitycenter.microsoft.com/Vulnerability.Read"
 if ($script:HasMDE -eq $false) { $mdeNote = 'Not collected: no Defender for Endpoint or Defender for Business service plan in the subscribed SKUs.' }
 elseif ($script:GraphToken -and $script:GraphToken.RefreshToken) {
     Write-Host "Collecting Defender for Endpoint device status..." -ForegroundColor Cyan
@@ -2050,7 +2053,8 @@ elseif ($script:GraphToken -and $script:GraphToken.RefreshToken) {
             $expo = try { (Invoke-RestMethod -Method Get -Uri 'https://api.securitycenter.microsoft.com/api/exposureScore' -Headers $mdeHeaders -ErrorAction Stop).score } catch { $null }
             $conf = try { (Invoke-RestMethod -Method Get -Uri 'https://api.securitycenter.microsoft.com/api/configurationScore' -Headers $mdeHeaders -ErrorAction Stop).score } catch { $null }
             $mdeKv = [ordered]@{
-                'Devices onboarded to Defender for Endpoint' = $mdeRows.Count
+                'Devices onboarded to Defender for Endpoint' = @($mdeRows | Where-Object { $_['Onboarding'] -in @('Onboarded', '', $null) }).Count
+                'Devices discovered on the network but not onboarded' = @($mdeRows | Where-Object { $_['Onboarding'] -notin @('Onboarded', '', $null) }).Count
                 'Sensor health: active / inactive / impaired' = "$(@($mdeRows | Where-Object { $_['Sensor health'] -eq 'Active' }).Count) / $(@($mdeRows | Where-Object { $_['Sensor health'] -eq 'Inactive' }).Count) / $(@($mdeRows | Where-Object { $_['Sensor health'] -like 'Impaired*' }).Count)"
                 'Devices at high risk (active alerts)'       = @($mdeRows | Where-Object { $_['Risk'] -eq 'High' }).Count
                 'Devices with high exposure (vulnerabilities)' = @($mdeRows | Where-Object { $_['Exposure'] -eq 'High' }).Count
@@ -2059,15 +2063,22 @@ elseif ($script:GraphToken -and $script:GraphToken.RefreshToken) {
             }
             $mdeIntuneWin = @($allDeviceRows | Where-Object { $_['Intune'] -eq 'Enrolled' -and $_['OS'] -match 'Windows' }).Count
             if ($mdeIntuneWin -gt $mdeRows.Count) { $mdeKv['Intune Windows devices not seen by Defender for Endpoint'] = $mdeIntuneWin - $mdeRows.Count }
-        } else { $mdeNote = 'Not collected: device-code sign-in was used (no refresh token for the Defender API).' }
+        } else { $mdeNote = 'Not collected: device-code sign-in was used (no refresh token for the Defender API).'; $mdeCheck = 'devicecode' }
     } catch {
         $msg = $_.Exception.Message
         try { $body = $_.ErrorDetails.Message; if ($body) { $j = $body | ConvertFrom-Json; if ($j.error_description) { $msg = "$msg $($j.error_description)" } elseif ($j.error.message) { $msg = "$msg $($j.error.message)" } } } catch { Write-Verbose 'Defender error body was not JSON.' }
-        $mdeNote = if ($msg -match 'AADSTS65001|AADSTS650|consent') { "The Defender for Endpoint permissions (Machine.Read, Software.Read, Vulnerability.Read) have not been consented for this app in the tenant. A Global Administrator can grant them at https://login.microsoftonline.com/$($ctx.TenantId)/adminconsent?client_id=$ClientId" } elseif ($msg -match '403|Forbidden|Unauthorized|401') { "Defender for Endpoint API refused the request ($($msg -replace '\s+', ' ')). The tenant is not licensed for Defender for Endpoint / Defender for Business, or the signed-in account lacks a Defender role (Security Reader)." } else { "Not collected: $($msg -replace '\s+', ' ')" }
-        if ($msg -match '(?i)no active license|not licensed') { $script:HasMDE = $false; $mdeNote = 'Not licensed: the Defender for Endpoint API reports no active licence for this tenant (the subscription includes Defender for Office 365 but not Defender for Endpoint / Defender for Business device onboarding).' }
+        $mdeCheck = if ($msg -match 'AADSTS65001|AADSTS650|consent') { 'consent' } elseif ($msg -match '403|Forbidden|Unauthorized|401') { 'role' } else { 'error' }
+        $mdeNote = if ($mdeCheck -eq 'consent') { "The Defender for Endpoint permissions (Machine.Read, Software.Read, Vulnerability.Read) have not been approved for this app in the tenant. A Global Administrator approves them once at $mdeConsentUrl" } elseif ($msg -match '403|Forbidden|Unauthorized|401') { "Defender for Endpoint API refused the request ($($msg -replace '\s+', ' ')). The signed-in account lacks a Defender role (Security Reader), or Defender has never been set up: open https://security.microsoft.com once as an administrator to finish setup." } else { "Not collected: $($msg -replace '\s+', ' ')" }
+        if ($msg -match '(?i)no active license|not licensed') { $script:HasMDE = $false; $mdeCheck = 'licence'; $mdeNote = 'Not licensed: the Defender for Endpoint API reports no active licence for this tenant (the subscription includes Defender for Office 365 but not Defender for Endpoint / Defender for Business device onboarding).' }
         Write-Warning "Defender for Endpoint: $mdeNote"
     }
-} else { $mdeNote = 'Not collected: device-code sign-in was used (no refresh token for the Defender API).' }
+} else { $mdeNote = 'Not collected: device-code sign-in was used (no refresh token for the Defender API).'; $mdeCheck = 'devicecode' }
+# Coverage: active Windows and macOS devices known to Entra ID / Intune that should report to Defender for Endpoint.
+$mdeEligible = @($allDeviceRows.ToArray() | Where-Object { $_['OS'] -match '^(Windows|macOS|Mac OS)' -and $_['Enabled'] -ne $false -and [string]$_['_tags'] -notmatch '\bstale\b' })
+$mdeOnboarded = @($mdeRows | Where-Object { $_['Onboarding'] -in @('Onboarded', '', $null) })
+$mdeNames = @{}; foreach ($r in $mdeOnboarded) { $n = ([string]$r['Device'] -split '\.')[0].ToUpper(); if ($n) { $mdeNames[$n] = $true } }
+$mdeMissingRows = @(foreach ($d in $mdeEligible) { if (-not $mdeNames.ContainsKey(([string]$d['Device']).ToUpper())) { [ordered]@{ 'Device' = $d['Device']; 'OS' = $d['OS']; 'Intune' = $d['Intune']; 'Owner / primary user' = $d['Owner / primary user']; 'Last activity' = $d['Last activity'] } } })
+$mdeCovered = $mdeEligible.Count - $mdeMissingRows.Count
 $MdeFilters = @(@{ Label = 'High risk'; Tag = 'highrisk' }, @{ Label = 'High exposure'; Tag = 'highexposure' }, @{ Label = 'Inactive sensor'; Tag = 'inactive' }, @{ Label = 'Stale'; Tag = 'stale' })
 
 $UserByUpn = @{}; foreach ($u in $users) { if ($u.userPrincipalName) { $UserByUpn[([string]$u.userPrincipalName).ToLower()] = $u } }
@@ -2672,8 +2683,42 @@ $defenderStatus = if (-not $exoCollected -or -not $defenderCollected) { 'Not col
                   else { 'Licensed, not configured' }
 $defenderEvidence = if (-not $exoCollected) { $exoKv['Exchange Online'] }
     else { "Defender for Office 365: $(if ($script:HasDefenderP2) { 'Plan 2' } elseif ($script:HasDefenderP1) { 'Plan 1' } else { 'not licensed' }). Preset security policies enabled: $presetOn of $(@($presetRows).Count). Anti-spam policies: $(@($spamRows).Count); anti-phishing: $(@($phishRows).Count); Safe Links active: $safeLinksActive; Safe Attachments active: $safeAttachActive. Defender for SharePoint/OneDrive/Teams: $(if ($atpGlobal) { $atpGlobal.EnableATPForSPOTeamsODB } else { 'n/a' }); Safe Documents: $(if ($atpGlobal) { $atpGlobal.EnableSafeDocs } else { 'n/a' })." }
-$mdeStatus = if ($mdeCollected) { $(if (@($mdeRows | Where-Object { $_['Risk'] -eq 'High' -or $_['Sensor health'] -ne 'Active' }).Count) { 'Attention needed' } elseif ($mdeRows.Count) { 'Onboarded' } else { 'No devices onboarded' }) } elseif ($script:HasMDE -eq $false) { 'Not licensed' } else { 'Not available' }
-$mdeEvidence = if ($mdeCollected) { "$($mdeRows.Count) device(s) onboarded; $($mdeKv['Devices at high risk (active alerts)']) at high risk; sensors active/inactive/impaired $($mdeKv['Sensor health: active / inactive / impaired']); exposure score $($mdeKv['Organization exposure score (0-100, lower is better)'])." } elseif ($script:HasMDE -eq $false) { 'No Defender for Endpoint or Defender for Business service plan in the subscribed SKUs.' } else { $mdeNote }
+# Deployment stage: licensed? deployed to every active Windows / macOS device? healthy? Or why it could not be checked.
+$mdeAttention = @($mdeOnboarded | Where-Object { $_['Risk'] -eq 'High' -or $_['Sensor health'] -ne 'Active' }).Count
+$mdeStatus = if ($script:HasMDE -eq $false) { 'Not licensed' }
+    elseif (-not $mdeCollected) { switch ($mdeCheck) { 'consent' { 'Not checked: permission not approved' } 'role' { 'Not checked: access refused' } 'devicecode' { 'Not checked: device-code sign-in' } default { 'Not checked' } } }
+    elseif ($mdeOnboarded.Count -eq 0) { 'Licensed, not deployed' }
+    elseif ($mdeAttention) { 'Attention needed' }
+    elseif ($mdeMissingRows.Count) { 'Partly deployed' }
+    else { 'Deployed' }
+$mdeCoverageText = if ($mdeEligible.Count) { "$mdeCovered of $($mdeEligible.Count) active Windows and macOS devices onboarded ($([math]::Round(100 * $mdeCovered / $mdeEligible.Count))%)" } else { "$($mdeOnboarded.Count) device(s) onboarded; no active Windows or macOS devices in Entra ID or Intune to compare against" }
+$mdeEvidence = switch -Regex ($mdeStatus) {
+    '^Not licensed'           { 'No Defender for Endpoint or Defender for Business plan in the subscribed licences, so devices have no Microsoft endpoint detection and response (EDR). A third-party EDR product would not show here.'; break }
+    '^Not checked'            { $mdeNote; break }
+    '^Licensed, not deployed' { "$script:MdePlan is licensed but no devices are onboarded, so the licence is not protecting anything yet. $($mdeEligible.Count) active Windows and macOS device(s) should be onboarded."; break }
+    default                   { "$($script:MdePlan): $mdeCoverageText; $($mdeKv['Devices at high risk (active alerts)']) at high risk; sensors active / inactive / impaired $($mdeKv['Sensor health: active / inactive / impaired']); exposure score $($mdeKv['Organization exposure score (0-100, lower is better)'])." }
+}
+$mdeMeaning = switch -Regex ($mdeStatus) {
+    '^Not licensed'           { 'Devices have no Microsoft endpoint detection and response. If another product (for example CrowdStrike or SentinelOne) protects them, record it in the minutes; this report cannot see third-party tools.'; break }
+    '^Not checked: permission' { 'Defender is licensed, but the report was not allowed to read it, so deployment is unknown.'; break }
+    '^Not checked'            { 'Defender is licensed, but the report could not read it, so deployment is unknown.'; break }
+    '^Licensed, not deployed' { 'The licence is paid for, but no device sends data to Defender. Attacks on workstations would not be detected or contained.'; break }
+    '^Partly deployed'        { 'Some devices are protected; the devices listed below are not, and an attacker only needs one.'; break }
+    '^Attention needed'       { 'Defender is deployed, but some devices are at high risk or have stopped reporting.'; break }
+    default                   { 'Every active Windows and macOS device reports to Defender and none is at high risk.' }
+}
+$mdeTodoHtml = switch -Regex ($mdeStatus) {
+    '^Not licensed'           { 'Decide whether to license Defender for Business (included in Microsoft 365 Business Premium, or as an add-on) or Defender for Endpoint, or record the endpoint protection product in use instead.'; break }
+    '^Not checked: permission' { "A Global Administrator approves the read-only Defender permissions once: <a href='$(HtmlEnc $mdeConsentUrl)' target='_blank' rel='noopener'>approve Defender for Endpoint read access</a>. After Accept the browser shows a localhost page that does not load; that is expected. Then run the report again."; break }
+    '^Not checked: access'    { "Give the account that runs the report the <b>Security Reader</b> role, and open the <a href='https://security.microsoft.com/machines' target='_blank' rel='noopener'>Defender portal</a> once as an administrator if Defender has never been set up. Then run the report again."; break }
+    '^Not checked: device'    { 'Run the report with the normal browser sign-in (without -DeviceCode).'; break }
+    '^Not checked'            { HtmlEnc $mdeNote; break }
+    '^Licensed, not deployed' { "Onboard devices through Intune: Endpoint security &gt; Endpoint detection and response, one policy for Windows and one for macOS, with the Defender connector turned on (<a href='https://security.microsoft.com/securitysettings/endpoints/onboarding' target='_blank' rel='noopener'>Defender onboarding settings</a>). Without Intune, use the onboarding package from the same page."; break }
+    '^Partly deployed'        { 'Onboard the devices listed below, or retire them if they are no longer in use.'; break }
+    '^Attention needed'       { "Investigate the high-risk devices and fix inactive sensors in the <a href='https://security.microsoft.com/machines' target='_blank' rel='noopener'>Defender portal</a>."; break }
+    default                   { 'Keep it: review high-risk devices and new devices every month.' }
+}
+$mdeStatusHtml = "<table class='kv'><tbody><tr><th>Deployment status</th><td>$(New-StatusBadge $mdeStatus)</td></tr><tr><th>Licence</th><td>$(HtmlEnc $(if ($script:HasMDE) { $script:MdePlan } else { 'Not licensed' }))</td></tr>$(if ($mdeCollected) { "<tr><th>Coverage</th><td>$(HtmlEnc $mdeCoverageText)</td></tr>" })<tr><th>What this means</th><td>$(HtmlEnc $mdeMeaning)</td></tr><tr><th>What to do</th><td>$mdeTodoHtml</td></tr></tbody></table>"
 
 $script:summaryRows = @()
 function Add-SummaryRow { param($control, $status, $evidence, $link) $script:summaryRows += [ordered]@{ 'Control' = $control; 'Status' = $status; 'Evidence' = $evidence; 'Section' = $link } }
@@ -3063,7 +3108,7 @@ $remediationGuides = @(
     @{ Control = 'DKIM signing (Exchange Online and DNS)';        Bad = '^(Partial|Missing)';      Priority = 'High';     Action = 'On the Defender portal DKIM page create the keys for each domain, publish the two selector CNAME records it shows in public DNS, then enable signing. Without DKIM, DMARC cannot reach reject and forwarded mail fails authentication.'; Url = 'https://security.microsoft.com/dkimv2' }
     @{ Control = 'DMARC policy (DNS)';                            Bad = '^(Partial|Missing)';      Priority = 'High';     Action = 'Publish a _dmarc TXT record with aggregate reporting, monitor for two to four weeks, then move to p=quarantine and p=reject at pct=100. DMARC is what actually tells the world''s mail servers to refuse mail spoofing the institution. DNS change, not a Microsoft 365 setting.'; Url = 'https://learn.microsoft.com/microsoft-365/security/office-365-security/email-authentication-dmarc-configure' }
     @{ Control = 'Email protection (Defender for Office 365 / EOP)'; Bad = '^(Licensed, not configured|EOP only)'; Priority = 'High'; Action = 'If Defender for Office 365 is licensed, enable the Standard preset security policy for all users (Strict for executives and finance) so Safe Links, Safe Attachments and impersonation protection apply. If it is not licensed, license Plan 1 (included in Business Premium); phishing is the top attack path against bank staff.' }
-    @{ Control = 'Endpoint protection (Defender for Endpoint)';  Bad = '^(Attention needed|No devices onboarded|Not licensed)'; Priority = 'Medium'; Action = 'Onboard every managed Windows and macOS device to Defender for Endpoint / Defender for Business through Intune, resolve high-risk alerts, and re-onboard or retire devices with inactive sensors.' }
+    @{ Control = 'Endpoint protection (Defender for Endpoint)';  Bad = '^(Attention needed|No devices onboarded|Not licensed|Licensed, not deployed|Partly deployed)'; Priority = 'Medium'; Action = 'Onboard every managed Windows and macOS device to Defender for Endpoint / Defender for Business through Intune, resolve high-risk alerts, and re-onboard or retire devices with inactive sensors.' }
 )
 # Where each control is changed: the admin center page the ticket should point at (Secure Score items carry Microsoft's own link)
 $ControlPortalUrl = @{
@@ -3909,6 +3954,7 @@ $concealFinding = $remediationSorted | Where-Object { $_.Finding -eq 'Usage repo
 if ($ualEnabled -eq $false) { $issueRows += [ordered]@{ 'Issue' = 'Activity logging is off'; 'Type' = 'Coverage gap'; 'What the committee is asked to decide' = 'Direct the IT provider to turn on the unified audit log this week; until then intrusion and data-leak checks cannot be completed.'; 'Who' = 'IT committee directs; IT provider / MSP implements'; 'Phase' = 'Now: this week'; '_html' = @{ 'Issue' = $(if ($ualFinding) { "<a href='#rem-$($ualFinding.Ref)'>Activity logging is off</a> <button type='button' class='tk' data-i='$($remIndexByRef[[string]$ualFinding.Ref])'>View ticket</button>" } else { "<a href='#ioc'>Activity logging is off</a>" }) } } }
 if ($reportConcealedNote) { $issueRows += [ordered]@{ 'Issue' = 'Usage report names are concealed'; 'Type' = 'Coverage gap'; 'What the committee is asked to decide' = 'Approve clearing the report privacy setting so OneDrive, site and team owners are named.'; 'Who' = 'IT committee approves; IT provider / MSP implements'; 'Phase' = 'Now: this week'; '_html' = @{ 'Issue' = $(if ($concealFinding) { "<a href='#rem-$($concealFinding.Ref)'>Usage report names are concealed</a> <button type='button' class='tk' data-i='$($remIndexByRef[[string]$concealFinding.Ref])'>View ticket</button>" } else { "<a href='#sharepoint'>Usage report names are concealed</a>" }) } } }
 if ($shareSitesDenied -gt 0) { $issueRows += [ordered]@{ 'Issue' = "$shareSitesDenied site(s) could not be read by the account that ran the report"; 'Type' = 'Coverage gap'; 'What the committee is asked to decide' = 'Run the report as a SharePoint administrator with site access, or accept that sharing on those sites is unverified.'; 'Who' = 'Security officer'; 'Phase' = 'Next 30 days'; '_links' = @{ 'Issue' = '#sharing' } } }
+if ($mdeStatus -match '^Not checked') { $issueRows += [ordered]@{ 'Issue' = 'Device protection (Defender for Endpoint) could not be checked'; 'Type' = 'Coverage gap'; 'What the committee is asked to decide' = $(if ($mdeCheck -eq 'consent') { 'Ask a Global Administrator to approve the read-only Defender permissions (link in section 16), so the next report shows whether every device is protected.' } else { 'Give the reporting account read access to Defender (Security Reader), so the next report shows whether every device is protected.' }); 'Who' = 'Security officer; IT provider / MSP implements'; 'Phase' = 'Next 30 days'; '_links' = @{ 'Issue' = '#mde' } } }
 if ($script:HasEntraP1 -eq $false) { $issueRows += [ordered]@{ 'Issue' = 'Entra ID P1 not licensed'; 'Type' = 'Coverage gap'; 'What the committee is asked to decide' = 'Without P1 there is no Conditional Access, sign-in log or risk policy; decide whether to license it (included in Business Premium).'; 'Who' = 'IT committee'; 'Phase' = 'Next 90 days'; '_links' = @{ 'Issue' = '#remediation' } } }
 $issueRows = @($issueRows)
 # Plan by phase and the GLBA board-report mapping
@@ -4148,7 +4194,7 @@ $(if (-not $dnsAvailable) { "<p class='empty'>DNS lookups are not available on t
 <p class='meta'>Exchange Online Protection and Microsoft Defender for Office 365 policies (anti-spam, anti-malware, anti-phishing, Safe Links, Safe Attachments, preset security policies) and Microsoft Defender for Endpoint device status.</p>
 $(New-KvTable ([ordered]@{
     'Defender for Office 365 licence'      = $(if ($script:HasDefenderP2) { 'Plan 2' } elseif ($script:HasDefenderP1) { 'Plan 1' } else { 'Not licensed: Exchange Online Protection only' })
-    'Defender for Endpoint licence'        = $(if ($script:HasMDE) { 'Licensed' } else { 'Not licensed' })
+    'Defender for Endpoint licence'        = $(if ($script:HasMDE) { $script:MdePlan } else { 'Not licensed' })
     'Preset security policies enabled'     = $(if ($defenderCollected) { "$presetOn of $(@($presetRows).Count)" } else { 'Not collected' })
     'Defender for SharePoint, OneDrive and Teams' = $(if ($atpGlobal) { $atpGlobal.EnableATPForSPOTeamsODB } else { 'Not collected' })
     'Safe Documents for Office clients'    = $(if ($atpGlobal) { $atpGlobal.EnableSafeDocs } else { 'Not collected' })
@@ -4168,8 +4214,10 @@ $(if ($script:HasDefenderP1) { New-HtmlTable $safeLinksRows -Columns 'Policy','E
 <h3>Safe Attachments policies (Defender for Office 365)</h3>
 $(if ($script:HasDefenderP1) { New-HtmlTable $safeAttachRows -Columns 'Policy','Enabled','Action','Redirect blocked mail','Redirect to','If scan errors or times out' -EmptyText 'Defender for Office 365 is licensed but no Safe Attachments policy exists.' } else { "<p class='empty'>Not licensed (requires Defender for Office 365).</p>" })
 "@ } else { "<p class='empty'>Exchange Online Protection and Defender for Office 365 policies were not collected ($(HtmlEnc $exoKv['Exchange Online'])).</p>" })
-<h3>Defender for Endpoint devices</h3>
-$(if ($mdeCollected) { (New-KvTable $mdeKv) + (New-HtmlTable $mdeRows -Id 'tbl-mde' -Filters $MdeFilters -EmptyText 'No devices are onboarded to Defender for Endpoint.') } else { "<p class='empty'>$(HtmlEnc $mdeEvidence)</p>" })
+<h3 id='mde'>Endpoint protection: Defender for Endpoint</h3>
+<p class='meta'>Whether workstations and laptops have endpoint detection and response (EDR): licensed, deployed to every active Windows and macOS device in Entra ID and Intune, and healthy.</p>
+$mdeStatusHtml
+$(if ($mdeCollected) { "<h4>Onboarded devices</h4>" + (New-KvTable $mdeKv) + (New-HtmlTable $mdeRows -Id 'tbl-mde' -Filters $MdeFilters -EmptyText 'No devices are onboarded to Defender for Endpoint.') + $(if ($mdeMissingRows.Count) { "<h4>Active Windows and macOS devices not onboarded ($($mdeMissingRows.Count))</h4><p class='meta'>Signed in or synced in the last $StaleDays days according to Entra ID or Intune, but not found in Defender for Endpoint by device name.</p>" + (New-HtmlTable $mdeMissingRows -Id 'tbl-mde-missing') } else { '' }) } else { '' })
 </section>
 $teamsSectionHtml
 $spoSectionHtml
