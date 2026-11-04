@@ -1808,8 +1808,10 @@ if (-not $SkipExchange) {
                 foreach ($mb in $mailboxes) {
                     $i++
                     Write-Progress -Activity 'Scanning inbox rules for forwarding' -Status $mb.PrimarySmtpAddress -PercentComplete ([int](100 * $i / [Math]::Max(1, @($mailboxes).Count)))
+                    # Look mailboxes up by their unique ID: the display name in .Identity ("ryan") is not unique when two mailboxes share an alias or name.
+                    $mbId = if ($mb.ExchangeObjectId) { [string]$mb.ExchangeObjectId } elseif ($mb.ExternalDirectoryObjectId) { [string]$mb.ExternalDirectoryObjectId } elseif ($mb.Guid) { [string]$mb.Guid } else { [string]$mb.PrimarySmtpAddress }
                     try {
-                        $allRules = @(Get-InboxRule -Mailbox $mb.Identity -ErrorAction Stop)
+                        $allRules = @(Get-InboxRule -Mailbox $mbId -ErrorAction Stop)
                         foreach ($r in ($allRules | Where-Object { $_.ForwardTo -or $_.ForwardAsAttachmentTo -or $_.RedirectTo })) {
                             $targets = @(@($r.ForwardTo) + @($r.ForwardAsAttachmentTo) + @($r.RedirectTo) | Where-Object { $_ })
                             $ext = @($targets | Where-Object { Test-ExternalAddress ([string]$_) }).Count -gt 0
@@ -1840,7 +1842,7 @@ if (-not $SkipExchange) {
                             }
                         } catch { Write-Verbose "Calendar permissions not readable for $($mb.PrimarySmtpAddress): $($_.Exception.Message)" }
                         # Indications of compromise: Full Access delegates that are not the owner or the system
-                        foreach ($perm in @(Get-MailboxPermission -Identity $mb.Identity -ErrorAction Stop | Where-Object { -not $_.IsInherited -and $_.Deny -ne $true -and ([string]$_.User) -notmatch '^(NT AUTHORITY|S-1-5)' -and ((@($_.AccessRights) | ForEach-Object { [string]$_ }) -join ',') -match 'FullAccess' })) {
+                        foreach ($perm in @(Get-MailboxPermission -Identity $mbId -ErrorAction Stop | Where-Object { -not $_.IsInherited -and $_.Deny -ne $true -and ([string]$_.User) -notmatch '^(NT AUTHORITY|S-1-5)' -and ((@($_.AccessRights) | ForEach-Object { [string]$_ }) -join ',') -match 'FullAccess' })) {
                             $fullAccessRows += [ordered]@{ 'Mailbox' = $mb.PrimarySmtpAddress; 'Mailbox type' = [string]$mb.RecipientTypeDetails; 'Delegate (Full Access)' = [string]$perm.User; 'Rights' = (Join-List (@($perm.AccessRights) | ForEach-Object { [string]$_ })); '_issues' = @{ 'Delegate (Full Access)' = 'ioc-delegate' }; '_tags' = $(if ([string]$mb.RecipientTypeDetails -eq 'SharedMailbox') { 'shared' } else { 'user' }) }
                         }
                     } catch { Write-Warning "Inbox rules or permissions not readable for $($mb.PrimarySmtpAddress): $($_.Exception.Message)" }

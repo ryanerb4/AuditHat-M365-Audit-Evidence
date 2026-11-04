@@ -28,6 +28,9 @@ the report footer.
   permissions, so a new organization's Global Administrator approves Graph, Exchange Online,
   Defender for Endpoint and Teams on one screen at first sign-in. Missing permissions print the
   single approval link.
+- Inbox rules and Full Access permissions look each mailbox up by its unique ID instead of its
+  name, so two mailboxes that share a name or alias (for example "ryan") no longer fail with
+  "isn't unique".
 - End of run: "One-time approval needed in this tenant" lists each service whose permission is
   missing, with one approval link per service.
 
