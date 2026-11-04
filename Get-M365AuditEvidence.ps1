@@ -101,7 +101,7 @@
 [CmdletBinding()]
 param(
     [string]$ClientName,           # optional; defaults to the tenant display name read from the tenant (default domain is shown alongside)
-    [string]$TenantId,             # tenant GUID or domain (contoso.onmicrosoft.com); required when -ClientId is a single-tenant app registration
+    [string]$TenantId,             # tenant GUID or domain (contoso.onmicrosoft.com); pass it on every run when you audit more than one organization (it selects that organization's saved sign-in); required when -ClientId is a single-tenant app registration
     [string]$ClientId,             # override the default Audit Hat public-client app with your own registration (README "Register your own app")
     [string]$OutputFolder = ".\M365-Audit-Evidence",
     [int]$AuditDays       = 30,

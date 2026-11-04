@@ -9,6 +9,9 @@ the report footer.
 - Saved sign-ins are kept per tenant when `-TenantId` is given, so auditing a second organization
   from the same PC no longer reuses the first organization's sign-in. A saved sign-in for a different
   named tenant is ignored with a warning.
+- README: new "Auditing more than one organization" section (consent link, account, `-TenantId`
+  on every run, separate output folders, settings file caveat); corrected the Teams section
+  number, the Framework Alignment filter names and the connector name in the quick start.
 
 ## 2026.10.31
 

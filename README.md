@@ -133,7 +133,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 # With the two Word documents (needs Microsoft Word on this PC)
 .\Get-M365AuditEvidence.ps1 -ClientName "Sample Bank" -WordDocs
 
-# Tenant blocks Microsoft's Graph PowerShell app (AADSTS700016)? Use your own app registration (see below)
+# Tenant blocks the AuditHat connector app (AADSTS700016)? Use your own app registration (see below)
 .\Get-M365AuditEvidence.ps1 -ClientName "Sample Bank" -ClientId <app id> -TenantId <tenant id>
 
 # Check permissions, licences and modules first (signs in, probes every API the report uses, prints what is missing, writes nothing)
@@ -141,6 +141,9 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 # Target a specific tenant and output folder, skip the slow inbox-rule scan
 .\Get-M365AuditEvidence.ps1 -TenantId contoso.onmicrosoft.com -OutputFolder C:\Audit\Contoso -SkipInboxRules
+
+# Another organization (consultant or MSP): always name its tenant. See "Auditing more than one organization"
+.\Get-M365AuditEvidence.ps1 -TenantId secondbank.com
 ```
 
 Output lands in `.\M365-Audit-Evidence\<Client> - M365 Audit Evidence <date>.html` by default, next to
@@ -181,7 +184,7 @@ schtasks /Create /TN "AuditHat M365 Audit Evidence" /SC MONTHLY /D 1 /ST 06:00 /
 
 Without `-TenantId` the script uses the one default saved sign-in, which belongs to whichever
 organization was saved first. When you audit several organizations from one PC, always pass
-`-TenantId` so each run signs in to the right one.
+`-TenantId` so each run signs in to the right one (see "Auditing more than one organization").
 
 What is saved and how it is protected:
 
@@ -205,6 +208,58 @@ What is saved and how it is protected:
 On Linux or macOS there is no DPAPI, so saved sign-ins are Windows-only; the script itself targets
 Windows PowerShell 5.1 and PowerShell 7 on Windows.
 
+---
+
+## Auditing more than one organization
+
+Consultants, IT providers and MSPs can run the same script for several banks or credit unions from
+one PC. Each organization is handled separately: its own sign-in, its own consent, its own reports
+and its own history.
+
+1. **Approve the connector once in the new organization.** A Global Administrator of that
+   organization either runs the script the first time, or opens this link ahead of time and accepts
+   the read-only permissions (replace the domain with theirs):
+
+   ```
+   https://login.microsoftonline.com/secondbank.com/adminconsent?client_id=ae173bf3-ba47-4ab8-ac54-3ea92fa6c337
+   ```
+
+   If their policy does not allow third-party enterprise applications, register an app in their
+   tenant instead (see "Register your own app") and pass its `-ClientId` on every run for them.
+2. **Sign in with an account in that organization.** Use a Global Reader there, plus View-Only
+   Organization Management in Exchange (see "Which account to sign in with"). Use a member account
+   of their tenant: guest accounts and partner (GDAP) access are not tested and Exchange Online
+   PowerShell does not accept guest administrators.
+3. **Name the tenant on every run** with `-TenantId` (their domain, such as `secondbank.com`, or
+   their tenant ID). This sends the sign-in to the right organization and keeps a separate saved
+   sign-in for each one.
+
+   ```powershell
+   # First run for the organization: browser sign-in, then save it for later runs
+   .\Get-M365AuditEvidence.ps1 -TenantId secondbank.com -SaveSignIn -OutputFolder C:\Audit\SecondBank
+
+   # Later runs, or a scheduled task: silent sign-in for that organization only
+   .\Get-M365AuditEvidence.ps1 -TenantId secondbank.com -NonInteractive -NoOpen -OutputFolder C:\Audit\SecondBank
+   ```
+
+4. **Check the first report.** The Executive Summary and the tenant details name the organization
+   and the signed-in account, so you can confirm the right tenant was read.
+
+What stays separate:
+
+- **Saved sign-in:** `%LOCALAPPDATA%\AuditHat\M365AuditEvidence-<tenant>.signin`, one file per
+  `-TenantId`. Without `-TenantId` the script uses the default saved sign-in, which belongs to
+  whichever organization was saved first, so it would read that organization again.
+- **Reports, ticket CSV and history** are named after the organization's display name. A separate
+  `-OutputFolder` per organization keeps the files apart and makes the evidence folder easy to
+  hand over.
+- **Settings file:** `M365AuditEvidence.settings.json` next to the script applies to every run from
+  that folder. Values on the command line win over it, so `-TenantId` always picks the
+  organization. Do not save one organization's own `ClientId` there if you also audit others with
+  the AuditHat connector. Use a separate copy of the script folder per organization instead.
+
+Nothing from one organization is ever sent to another, or to Audit Hat.
+
 ## Requirements
 
 | # | Requirement | Notes |
@@ -214,7 +269,7 @@ Windows PowerShell 5.1 and PowerShell 7 on Windows.
 | 3 | `Microsoft.Graph.Authentication` module | **Auto-installed** for the current user on first run |
 | 4 | `ExchangeOnlineManagement` module | **Auto-installed** for the current user on first run; only needed for the Exchange section |
 | 5 | A Microsoft 365 account | Sign-in opens the normal Microsoft sign-in page in your default browser; approve the Microsoft Authenticator / MFA prompt and you are in. **MFA, Conditional Access and passwordless all work.** `-DeviceCode` is available for remote or locked-down sessions |
-| 6 | `MicrosoftTeams` module (optional) | Not auto-installed (large). `Install-Module MicrosoftTeams -Scope CurrentUser` adds tenant-wide Teams external access, guest access and meeting policies to section 16 |
+| 6 | `MicrosoftTeams` module (optional) | Not auto-installed (large). `Install-Module MicrosoftTeams -Scope CurrentUser` adds tenant-wide Teams external access, guest access and meeting policies to section 17 |
 | 7 | Microsoft Word (optional) | Only for `-WordDocs` |
 
 No local admin rights are needed. Modules install with `-Scope CurrentUser`.
@@ -364,7 +419,7 @@ without that person needing to understand PowerShell or Microsoft Graph.
 | 2 | Review These Now: Possible Indications of Compromise | auditLogs/directoryAudits (targeted activities), auditLogs/signIns (P1), identityProtection (P2), applications and servicePrincipals, Exchange mailboxes, inbox rules, permissions and transport rules, Search-UnifiedAuditLog (sharing, downloads, mailbox changes), Get-SafeLinksDetailReport | A plain-language **situation table** (Urgent / Review / Clear / Not checked) covering: mail forwarded outside the organization, inbox rules that hide or delete mail, known-abused OAuth apps (PerfectData Software, eM Client, rclone, Supermailer and others) and unverified apps with mail or file access, new apps and credentials, Anyone links and external sharing, unusual download or sync volume, mailbox rule and permission changes in the audit log, malicious link clicks, domain/federation changes, users at risk, legacy sign-ins, password sprays, multi-country sign-ins, MFA denials, role and MFA changes, new accounts and delegates, mailbox auditing. Detail tables behind every row |
 | 3 | Security Controls Summary | computed from everything below | One row per control with a **Result** badge (Pass / Partial: review / Action needed / Not measured), filters by result, (MFA, legacy auth, device access, Intune, TAP, device join, forwarding, consent, **email authentication**, **email protection**, **endpoint protection**, Secure Score, privileged roles): Status, Evidence, link to detail. Only **enabled** CA policies count as enforced |
 | 4 | Remediation Plan | summary results, secureScoreControlProfiles, directoryRoles, subscribedSkus, built-in playbooks | **Roadmap** by phase (this week, 30 days, 90 days, 12 months) then every failed control with a recommended action, **step-by-step instructions, owner, effort, prerequisite and a done-when test**, privileged-access findings (Global Admins without MFA, too many or a single Global Admin), licensing gaps, and every unimplemented Secure Score action with points available. Sorted Critical, High, Medium, Low, then by points. Each finding carries a stable reference (`AH-xxxxxx`), a **Copy ticket** button, priority filters and a **CSV download**; the same CSV is written next to the report |
-| 5 | Framework Alignment | computed from section 3 plus a built-in mapping table | Every measured control with its status and the expectation it answers in NIST CSF 2.0 / SP 800-63B, the CIS Microsoft 365 Foundations Benchmark (v4.0 numbering), CIS Controls v8 and FFIEC / NCUA (IT Handbook, 2021 Authentication Guidance, CAT / ACET domain codes); filters Met / Gap / Not measured; a plain statement of what the report does not test |
+| 5 | Framework Alignment | computed from section 3 plus a built-in mapping table | Every measured control with its status and the expectation it answers in NIST CSF 2.0 / SP 800-63B, the CIS Microsoft 365 Foundations Benchmark (v4.0 numbering), CIS Controls v8 and FFIEC / NCUA (IT Handbook, 2021 Authentication Guidance, CAT / ACET domain codes); a Result column (Pass, Partial: review, Action needed, Not measured) with filters; a plain statement of what the report does not test |
 | 6 | MDM Compliance Policies | deviceCompliancePolicies | Intune compliance policies per platform: Basics / Settings / Actions for noncompliance / Assignments |
 | 7 | Intune Policies | deviceConfigurations, configurationPolicies (settings catalog), intents (endpoint security), enrollment configs, app protection | Every Intune policy and the settings behind it |
 | 8 | Managed Devices | managedDevices, devices (+registeredOwners) | Device counts, then one device list joining every Entra ID device with its Intune record: owner, **last user** seen by Intune, last activity, compliance, encryption. Quick filters: Stale (90 days), Not in Intune, Noncompliant, Not encrypted, Personal, Windows, Disabled, plus text search |
@@ -676,7 +731,7 @@ plain language.
 | A second sign-in prompt appears for Exchange Online | The connector has not been granted the `Exchange.Manage` delegated permission in this tenant. Grant it with the admin-consent link printed in the warning; until then the fallback prompt works normally |
 | `AADSTS50194` single-tenant application | `-ClientId` given without `-TenantId`. Add `-TenantId <tenant GUID or domain>` |
 | `AADSTS65001` or `AADSTS90008` after registering your own app | Admin consent was not granted on the app's API permissions page, or a permission is missing. Compare the list in step 4 |
-| Defender for Endpoint: "permissions ... have not been consented" | The connector''s Defender for Endpoint permissions (Machine.Read, Software.Read, Vulnerability.Read) need one admin consent per tenant: `https://login.microsoftonline.com/<tenant>/adminconsent?client_id=ae173bf3-ba47-4ab8-ac54-3ea92fa6c337`. Without it the Defender device table is skipped and everything else still runs |
+| Defender for Endpoint: "permissions ... have not been consented" | The connector's Defender for Endpoint permissions (Machine.Read, Software.Read, Vulnerability.Read) need one admin consent per tenant: `https://login.microsoftonline.com/<tenant>/adminconsent?client_id=ae173bf3-ba47-4ab8-ac54-3ea92fa6c337`. Without it the Defender device table is skipped and everything else still runs |
 | Defender for Endpoint: "Not collected: device-code sign-in" | The Defender API needs a refresh token, which only the browser sign-in provides. Run without `-DeviceCode` |
 | SPF/DKIM/DMARC show "Not available" | `Resolve-DnsName` is missing (non-Windows PowerShell host) or DNS is blocked. Run from a Windows PC with normal DNS |
 | `Microsoft Secure Score: Not available` | The signed-in account needs Security Reader (or Global Reader) and the `SecurityEvents.Read.All` scope must be consented. Re-run as a Global Administrator and accept the consent prompt |
