@@ -3,6 +3,7 @@ M365-Audit-Evidence/
 *.html
 *.docx
 *.csv
+*.log
 # Local per-tenant settings
 M365AuditEvidence.settings.json
 # Editor and OS noise

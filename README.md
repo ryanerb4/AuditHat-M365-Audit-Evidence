@@ -150,6 +150,13 @@ Output lands in `.\M365-Audit-Evidence\<Client> - M365 Audit Evidence <date>.htm
 `<Client> - Remediation tickets <date>.csv` and the per-tenant history file. The report opens in
 your default browser when the run completes (`-NoOpen` suppresses that).
 
+**Run logs.** Every run also writes two text files next to the report, named with the run's start
+time: `<Client> - Run log <yyyy-MM-dd HHmmss>.log` holds everything shown in the console, and
+`<Client> - Errors <yyyy-MM-dd HHmmss>.log` lists the warnings shown, the full text of messages from
+Microsoft's modules, and every error recorded during the run with a count. Send the errors log when
+asking for help. They contain account and mailbox names, so keep them with the report. `-NoLog`
+turns them off.
+
 **You sign in once.** The browser sign-in is reused for Exchange Online (and, when the module is
 installed, Teams) through the same connector, so there is no second prompt. If the connector has
 not been granted the Exchange permission in your tenant yet, the script warns and falls back to a
@@ -489,6 +496,7 @@ for the approver. The report never guesses.
 | `-ForgetSignIn` | off | Delete the saved sign-in and sign in interactively |
 | `-NonInteractive` | off | For scheduled tasks: use the saved sign-in or stop with exit code 2; never opens a browser or waits for a code; implies no report pop-up |
 | `-SignInCachePath` | `%LOCALAPPDATA%\AuditHat\M365AuditEvidence.signin`, or `M365AuditEvidence-<tenant>.signin` with `-TenantId` | Where the encrypted saved sign-in is kept |
+| `-NoLog` | off | Do not write the run log and errors log (see "Run logs") |
 | `-SkipAuditLog` | off | Skip the unified audit log search (sharing events, download volumes, mailbox rule and permission changes) that feeds section 2; faster on very large tenants |
 | (none) | | **Version** is printed in the console banner, the report navigation and footer (`2026.10.31` style: year.month.day of the last change). The report links to this GitHub repository for source and updates |
 | `-NoHistory` | off | Do not read or write the per-tenant `<Client> - history.json` file; the progress section then shows only the current run |
@@ -744,6 +752,7 @@ plain language.
 | `AADSTS65001` or `AADSTS90008` after registering your own app | Admin consent was not granted on the app's API permissions page, or a permission is missing. Compare the list in step 4 |
 | Defender for Endpoint: "permissions ... have not been approved" | The connector's Defender for Endpoint permissions (Machine.Read, Software.Read, Vulnerability.Read) need one approval per tenant by a Global Administrator. The warning and section 16 give the link, which asks for exactly those three permissions: `https://login.microsoftonline.com/<tenant>/v2.0/adminconsent?client_id=ae173bf3-ba47-4ab8-ac54-3ea92fa6c337&redirect_uri=http://localhost&scope=https://api.securitycenter.microsoft.com/Machine.Read%20https://api.securitycenter.microsoft.com/Software.Read%20https://api.securitycenter.microsoft.com/Vulnerability.Read`. After Accept the browser shows a localhost page that does not load, which is expected. Until then section 16 reads "Not checked: permission not approved" and everything else still runs |
 | Defender for Endpoint: "device-level detail was not read" | The Defender API refused the signed-in account, or its permissions are not approved. The status still comes from the licence data and Intune (setup not finished, licences not assigned, no onboarding policy). Give the account the Security Reader role, or approve the permissions with the link printed at the end of the run |
+| `Failed to get user scopes ... 401 ... ignore AU check` during the audit log search | Comes from Microsoft's Exchange module: its administrative-unit check does not accept the single sign-on token, and the module then runs the search normally. The script shows one short note instead; the full text is in the errors log. Results are complete unless the signed-in account is limited to administrative units |
 | `Exchange Online collection failed: UnAuthorized` | Either the connector's Exchange permission (Exchange.Manage) is not approved in this tenant, or the account has no Exchange role. The script now checks the Exchange token first: a missing permission is reported as such, Exchange falls back to its own sign-in, and the approval link is printed at the end of the run. If the error remains, give the account Global Reader, View-Only Organization Management or Exchange Administrator |
 | Defender for Endpoint: "Not collected: device-code sign-in" | The Defender API needs a refresh token, which only the browser sign-in provides. Run without `-DeviceCode` |
 | SPF/DKIM/DMARC show "Not available" | `Resolve-DnsName` is missing (non-Windows PowerShell host) or DNS is blocked. Run from a Windows PC with normal DNS |

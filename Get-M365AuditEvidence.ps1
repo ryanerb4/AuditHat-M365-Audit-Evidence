@@ -112,6 +112,7 @@ param(
     [switch]$DeviceCode,           # sign in with a device code instead of the browser (for remote sessions or if the browser flow fails)
     [switch]$NoHistory,            # do not read or write the per-tenant history file used for the progress charts and change log
     [switch]$NoOpen,               # do not open the finished report in the default browser
+    [switch]$NoLog,                # do not write the run log and errors log to the output folder
     [switch]$SkipAuditLog,         # skip the unified audit log search (sharing, downloads, mailbox rule changes) used for indications of compromise
     [switch]$TestPermissions,      # sign in, probe every API and permission the report uses, print what is missing, and exit without collecting
     [switch]$SkipShareScan,        # skip the per-item sharing scan of SharePoint sites and OneDrive (section 19 then shows Teams, Exchange and guest access only)
@@ -142,6 +143,63 @@ if (Test-Path $settingsPath) {
         Write-Host "Using settings from $settingsPath" -ForegroundColor DarkGray
     } catch { Write-Warning "Could not read $settingsPath : $($_.Exception.Message)" }
 }
+# ----------------------------------------------------------------------------------------------
+# Run logs, named with this run's start time, in the output folder:
+#   "<Client> - Run log <yyyy-MM-dd HHmmss>.log"  everything shown in the console (PowerShell transcript)
+#   "<Client> - Errors <yyyy-MM-dd HHmmss>.log"   warnings shown, Microsoft module messages in full, and every error recorded
+# ----------------------------------------------------------------------------------------------
+$RunStamp = (Get-Date).ToString('yyyy-MM-dd HHmmss')
+$script:RunIssues = New-Object System.Collections.Generic.List[string]
+$script:RunLogPath = $null; $script:RunLogDone = $false
+$script:ErrorMark = if ($Error.Count) { $Error[0] } else { $null }   # errors from before this run are left out of the errors log
+if (-not $NoLog) {
+    try {
+        if (-not (Test-Path $OutputFolder)) { New-Item -ItemType Directory -Path $OutputFolder -Force | Out-Null }
+        $script:RunLogPath = Join-Path (Resolve-Path $OutputFolder).Path "M365 Audit Evidence - Run log $RunStamp.log"
+        Start-Transcript -Path $script:RunLogPath -Force | Out-Null
+    } catch { Write-Warning "Could not start the run log: $($_.Exception.Message)"; $script:RunLogPath = $null }
+}
+function Complete-RunLog {
+    # Stops the transcript, names both logs after the client, and writes the errors log. Safe to call more than once.
+    if (-not $script:RunLogPath -or $script:RunLogDone) { return }
+    $script:RunLogDone = $true
+    try { Stop-Transcript | Out-Null } catch { Write-Verbose 'Transcript was not running.' }
+    $prefix = if ($script:safeClient) { $script:safeClient } else { 'M365 Audit Evidence' }
+    $dir = Split-Path $script:RunLogPath -Parent
+    $runLog = $script:RunLogPath
+    if ($prefix -ne 'M365 Audit Evidence') {
+        $named = Join-Path $dir "$prefix - Run log $RunStamp.log"
+        try { Move-Item -LiteralPath $script:RunLogPath -Destination $named -Force -ErrorAction Stop; $runLog = $named } catch { Write-Verbose "Run log kept as $runLog" }
+    }
+    $errPath = Join-Path $dir "$prefix - Errors $RunStamp.log"
+    $shown = @(); try { $shown = @(Get-Content -LiteralPath $runLog -ErrorAction Stop | Where-Object { $_ -match '^(WARNING|ERROR):|^Write-Error:' }) } catch { Write-Verbose 'Run log could not be read.' }
+    $errs = @(foreach ($e in $Error) { if ($null -ne $script:ErrorMark -and [object]::ReferenceEquals($e, $script:ErrorMark)) { break }; $e })
+    $errGroups = @($errs | ForEach-Object {
+            $m = if ($_ -is [System.Management.Automation.ErrorRecord]) { [string]$_.Exception.Message } else { [string]$_ }
+            $m = ($m -replace '\s+', ' ').Trim(); if ($m.Length -gt 600) { $m = $m.Substring(0, 600) + '...' }
+            $where = if ($_ -is [System.Management.Automation.ErrorRecord] -and $_.InvocationInfo -and $_.InvocationInfo.ScriptLineNumber) { "line $($_.InvocationInfo.ScriptLineNumber)$(if ($_.InvocationInfo.MyCommand) { ", $($_.InvocationInfo.MyCommand.Name)" })" } else { '' }
+            "$m$(if ($where) { "  [$where]" })"
+        } | Group-Object | Sort-Object Count -Descending)
+    $out = New-Object System.Collections.Generic.List[string]
+    $out.Add("AuditHat M365 Audit Evidence $($ScriptVersion): errors and warnings")
+    $out.Add("Run started: $RunStamp    Tenant: $(if ($ctx) { $ctx.TenantId } else { 'not signed in' })    Account: $(if ($ctx) { $ctx.Account } else { '' })")
+    $out.Add("Full console output: $(Split-Path $runLog -Leaf)")
+    $out.Add('')
+    $out.Add("== Warnings shown during the run ($($shown.Count)) ==")
+    foreach ($x in $shown) { $out.Add($x) }; if (-not $shown.Count) { $out.Add('None.') }
+    $out.Add('')
+    $out.Add("== Microsoft module messages, full text ($($script:RunIssues.Count)) ==")
+    foreach ($x in $script:RunIssues) { $out.Add($x); $out.Add('') }; if (-not $script:RunIssues.Count) { $out.Add('None.'); $out.Add('') }
+    $out.Add("== Errors recorded during the run, including ones the script handled ($($errGroups.Count) distinct) ==")
+    $out.Add('Most are expected (a feature that is not licensed, a permission that is not approved) and are explained in the warnings above and in the report.')
+    foreach ($g in $errGroups) { $out.Add("$($g.Count) x  $($g.Name)") }; if (-not $errGroups.Count) { $out.Add('None.') }
+    try { [IO.File]::WriteAllLines($errPath, $out.ToArray(), [Text.Encoding]::UTF8) } catch { Write-Warning "Could not write the errors log: $($_.Exception.Message)" }
+    Write-Host "Run log: $runLog" -ForegroundColor DarkGray
+    Write-Host "Errors log: $errPath ($($shown.Count) warning(s), $($errGroups.Count) distinct error(s))" -ForegroundColor DarkGray
+}
+# A crash still leaves both logs behind; 'break' then stops the script with the original error.
+trap { Complete-RunLog; break }
+
 # Default app: "AuditHat Pulse Reports (PowerShell)", a multi-tenant PUBLIC client registered in the Audit Hat tenant.
 # Public client = no secret, no certificate, nothing to embed or rotate. Every permission is delegated and read-only,
 # so the token can never do more than the signed-in person can. Redirect URI http://localhost. Any tenant can use it
@@ -281,6 +339,20 @@ function Get-TokenScope {
         return [string](([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($p)) | ConvertFrom-Json).scp)
     } catch { return $null }
 }
+function Write-ExoModuleWarning {
+    # The Exchange module's Search-UnifiedAuditLog runs an administrative-unit (AU) scope check against a Microsoft service
+    # that only accepts tokens from Microsoft's own Exchange app. With single sign-on it answers 401 ("Failed to get user
+    # scopes ... ignore AU check") and the module carries on with the search. Show that as one short line; show every other
+    # module warning unchanged.
+    param($Warnings)
+    foreach ($w in @($Warnings)) {
+        $t = [string]$w
+        if ($t) { $script:RunIssues.Add("Exchange module ($(Get-Date -Format 'HH:mm:ss')): $t") }
+        if ($t -match 'Failed to get user scopes|ignore AU check') {
+            if (-not $script:ExoAuNoteShown) { $script:ExoAuNoteShown = $true; Write-Host "Note: the Exchange module skipped its administrative-unit check (it does not accept the single sign-on token) and ran the audit log search normally. Results are complete unless the signed-in account is limited to administrative units." -ForegroundColor DarkGray }
+        } elseif ($t) { Write-Warning $t }
+    }
+}
 function Get-ConsentLink {
     # One-time admin approval of exactly these delegated permissions for the connector in this tenant.
     param([string]$Scopes)
@@ -407,6 +479,7 @@ if (-not $DeviceCode) {
 }
 if (-not $signedIn -and $NonInteractive) {
     Write-Error "No usable saved sign-in and -NonInteractive is set, so no browser or device-code prompt was shown. Run the script once interactively with -SaveSignIn as the same Windows user, then schedule it again."
+    Complete-RunLog
     exit 2
 }
 if (-not $signedIn -and -not $DeviceCode) { $signedIn = Connect-GraphBrowser }
@@ -639,7 +712,7 @@ if ($TestPermissions) {
             Add-PermResult 'Exchange Online connection (token)' 'OK' ''
             $cfg = Get-AdminAuditLogConfig
             Add-PermResult 'Unified audit log turned on' $(if ($cfg.UnifiedAuditLogIngestionEnabled) { 'OK' } else { 'TURNED OFF' }) $(if ($cfg.UnifiedAuditLogIngestionEnabled) { '' } else { 'Purview portal > Audit > Start recording user and admin activity (or Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true)' })
-            try { Search-UnifiedAuditLog -StartDate (Get-Date).AddDays(-1) -EndDate (Get-Date) -ResultSize 1 -ErrorAction Stop | Out-Null; Add-PermResult 'Audit log search role' 'OK' '' }
+            try { $ualWarn = @(); Search-UnifiedAuditLog -StartDate (Get-Date).AddDays(-1) -EndDate (Get-Date) -ResultSize 1 -ErrorAction Stop -WarningAction SilentlyContinue -WarningVariable +ualWarn | Out-Null; Write-ExoModuleWarning $ualWarn; Add-PermResult 'Audit log search role' 'OK' '' }
             catch { Add-PermResult 'Audit log search role' 'NO PERMISSION' "View-Only Audit Logs or Audit Logs role in Exchange Online. $($_.Exception.Message)" }
             if ($script:HasDefenderP1 -or (Get-Command Get-SafeLinksDetailReport -ErrorAction SilentlyContinue)) { try { Get-SafeLinksDetailReport -StartDate (Get-Date).AddDays(-1) -EndDate (Get-Date) -PageSize 1 -ErrorAction Stop | Out-Null; Add-PermResult 'Safe Links click report' 'OK' '' } catch { Add-PermResult 'Safe Links click report' 'NOT LICENSED' "Defender for Office 365 Plan 1 or 2. $($_.Exception.Message)" } }
         } catch { Add-PermResult 'Exchange Online connection (token)' 'FAILED' $_.Exception.Message }
@@ -649,6 +722,7 @@ if ($TestPermissions) {
     $bad = @($script:permResults | Where-Object { $_.Result -ne 'OK' })
     if ($bad.Count) { Write-Host "$($bad.Count) item(s) need attention; see 'Needs / fix'. Items marked NOT LICENSED are licence gaps, not permission problems. Admin consent for the connector: https://login.microsoftonline.com/$($ctx.TenantId)/adminconsent?client_id=$($script:GraphClientId)" -ForegroundColor Yellow }
     else { Write-Host 'Everything the report uses is available.' -ForegroundColor Green }
+    Complete-RunLog
     return
 }
 
@@ -1918,12 +1992,14 @@ if (-not $SkipExchange) {
                     param([string[]]$Operations, [int]$Days, [int]$MaxRecords, [string]$What)
                     $out = New-Object System.Collections.Generic.List[object]
                     $sid = [guid]::NewGuid().ToString()
+                    $ualWarn = @()
                     try {
                         do {
-                            $page = @(Search-UnifiedAuditLog -StartDate (Get-Date).AddDays(-$Days) -EndDate (Get-Date).AddMinutes(5) -Operations $Operations -SessionId $sid -SessionCommand ReturnLargeSet -ResultSize 5000 -ErrorAction Stop)
+                            $page = @(Search-UnifiedAuditLog -StartDate (Get-Date).AddDays(-$Days) -EndDate (Get-Date).AddMinutes(5) -Operations $Operations -SessionId $sid -SessionCommand ReturnLargeSet -ResultSize 5000 -ErrorAction Stop -WarningAction SilentlyContinue -WarningVariable +ualWarn)
                             foreach ($rec in $page) { try { $d = $rec.AuditData | ConvertFrom-Json; if ($d) { $out.Add($d) } } catch { Write-Verbose 'Audit record was not JSON.' } }
                         } while ($page.Count -eq 5000 -and $out.Count -lt $MaxRecords)
                     } catch { $script:GraphFailures["audit log: $What"] = $_.Exception.Message; Write-Warning "Audit log search ($What) failed: $($_.Exception.Message)" }
+                    Write-ExoModuleWarning $ualWarn
                     return $out.ToArray()
                 }
                 $ualCollected = $true
@@ -3695,6 +3771,7 @@ if ($remIdx -eq 0) { $remHtml = New-Object System.Text.StringBuilder; [void]$rem
 # ---- Tickets: the same findings as plain rows for Copy ticket / Copy all / CSV download (in the report) and a CSV file next to the report
 $safeClient = ($ClientLabel -replace '[^A-Za-z0-9 ._()-]', '').Trim()
 if (-not $safeClient) { $safeClient = 'Client' }
+$script:safeClient = $safeClient   # names the run logs
 $ticketCsvName = "$safeClient - Remediation tickets $($ReportDate.ToString('yyyy-MM-dd')).csv"
 $ticketRows = @($remediationSorted | ForEach-Object {
     [pscustomobject]([ordered]@{
@@ -4472,6 +4549,7 @@ $($d.Body)
 
 Disconnect-MgGraph | Out-Null
 Write-Host "Done." -ForegroundColor Green
+Complete-RunLog
 
 
 

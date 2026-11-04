@@ -28,6 +28,11 @@ the report footer.
   permissions, so a new organization's Global Administrator approves Graph, Exchange Online,
   Defender for Endpoint and Teams on one screen at first sign-in. Missing permissions print the
   single approval link.
+- Run logs: every run writes `<Client> - Run log <date time>.log` (full console output) and
+  `<Client> - Errors <date time>.log` (warnings shown, Microsoft module messages in full, every error
+  recorded with a count) to the output folder, also when the run stops early. `-NoLog` turns them off.
+- The Exchange module's "Failed to get user scopes ... ignore AU check" 401 during the audit log
+  search is shown as one short note (the search still runs); the full text goes to the errors log.
 - Inbox rules and Full Access permissions look each mailbox up by its unique ID instead of its
   name, so two mailboxes that share a name or alias (for example "ryan") no longer fail with
   "isn't unique".
