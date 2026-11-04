@@ -1,6 +1,6 @@
 # AuditHat M365 Audit Evidence
 
-**Version:** 2026.10.31 (date-based) · **Source:** https://github.com/ryanerb4/AuditHat-M365-Audit-Evidence
+**Version:** 2026.11.04 (date-based) · **Source:** https://github.com/ryanerb4/AuditHat-M365-Audit-Evidence
 
 **Author:** Ryan Erb · **Provided by:** [Audit Hat](https://AuditHat.com)
 
@@ -173,7 +173,15 @@ schtasks /Create /TN "AuditHat M365 Audit Evidence" /SC MONTHLY /D 1 /ST 06:00 /
 
 # Remove the saved sign-in
 .\Get-M365AuditEvidence.ps1 -ForgetSignIn
+
+# More than one organization: name the tenant every time. Each tenant gets its own saved sign-in and history.
+.\Get-M365AuditEvidence.ps1 -TenantId secondbank.com -SaveSignIn
+.\Get-M365AuditEvidence.ps1 -TenantId secondbank.com -NonInteractive -NoOpen
 ```
+
+Without `-TenantId` the script uses the one default saved sign-in, which belongs to whichever
+organization was saved first. When you audit several organizations from one PC, always pass
+`-TenantId` so each run signs in to the right one.
 
 What is saved and how it is protected:
 
@@ -414,7 +422,7 @@ for the approver. The report never guesses.
 | `-SaveSignIn` | off | After the browser sign-in, keep the refresh token encrypted (DPAPI, this Windows user, this PC) so later runs need no prompt. See "Running on a schedule" |
 | `-ForgetSignIn` | off | Delete the saved sign-in and sign in interactively |
 | `-NonInteractive` | off | For scheduled tasks: use the saved sign-in or stop with exit code 2; never opens a browser or waits for a code; implies no report pop-up |
-| `-SignInCachePath` | `%LOCALAPPDATA%\AuditHat\M365AuditEvidence.signin` | Where the encrypted saved sign-in is kept |
+| `-SignInCachePath` | `%LOCALAPPDATA%\AuditHat\M365AuditEvidence.signin`, or `M365AuditEvidence-<tenant>.signin` with `-TenantId` | Where the encrypted saved sign-in is kept |
 | `-SkipAuditLog` | off | Skip the unified audit log search (sharing events, download volumes, mailbox rule and permission changes) that feeds section 2; faster on very large tenants |
 | (none) | | **Version** is printed in the console banner, the report navigation and footer (`2026.10.31` style: year.month.day of the last change). The report links to this GitHub repository for source and updates |
 | `-NoHistory` | off | Do not read or write the per-tenant `<Client> - history.json` file; the progress section then shows only the current run |

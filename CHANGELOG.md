@@ -4,6 +4,12 @@ All notable changes to the AuditHat M365 Audit Evidence script. Versions are dat
 (`year.month.day` of the last change) and appear in the console banner, the report navigation and
 the report footer.
 
+## 2026.11.04
+
+- Saved sign-ins are kept per tenant when `-TenantId` is given, so auditing a second organization
+  from the same PC no longer reuses the first organization's sign-in. A saved sign-in for a different
+  named tenant is ignored with a warning.
+
 ## 2026.10.31
 
 First public release.

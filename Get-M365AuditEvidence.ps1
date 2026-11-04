@@ -118,12 +118,12 @@ param(
     [switch]$SaveSignIn,           # after a successful browser sign-in, keep the refresh token encrypted (Windows DPAPI, this user, this PC) so later runs and scheduled tasks need no prompt
     [switch]$ForgetSignIn,         # delete the saved sign-in and sign in interactively
     [switch]$NonInteractive,       # for scheduled tasks: use the saved sign-in or stop with exit code 2; never open a browser or wait for a code
-    [string]$SignInCachePath = (Join-Path $env:LOCALAPPDATA 'AuditHat\M365AuditEvidence.signin')   # where the encrypted saved sign-in lives
+    [string]$SignInCachePath       # where the encrypted saved sign-in lives; default %LOCALAPPDATA%\AuditHat\M365AuditEvidence.signin, or M365AuditEvidence-<tenant>.signin with -TenantId
 )
 
 $ErrorActionPreference = 'Stop'
 $ReportDate = Get-Date
-$ScriptVersion = '2026.10.31'   # date-based version: year.month.day of the last change
+$ScriptVersion = '2026.11.04'   # date-based version: year.month.day of the last change
 $RepoUrl = 'https://github.com/ryanerb4/AuditHat-M365-Audit-Evidence'
 $AdRepoUrl = 'https://github.com/ryanerb4/audithat-ad-governance-report'   # companion report for on-premises Active Directory
 
@@ -240,7 +240,13 @@ Write-Host ""
 # (or let a failed browser flow fall back) to sign in with a device code instead.
 
 $script:GraphClientId = $ClientId
-$script:AuthTenant    = if ($TenantId) { $TenantId } else { 'organizations' }   # 'organizations' excludes personal Microsoft accounts
+$script:AuthTenant    = if ($TenantId) { $TenantId } else { 'organizations' }
+# One saved sign-in per tenant: with -TenantId the default file is named after the tenant, so auditing a second
+# organization never silently reuses the first organization's sign-in.
+if (-not $SignInCachePath) {
+    $cacheLeaf = if ($TenantId) { "M365AuditEvidence-$(($TenantId -replace '[^A-Za-z0-9.-]', '_').ToLower()).signin" } else { 'M365AuditEvidence.signin' }
+    $SignInCachePath = Join-Path $env:LOCALAPPDATA "AuditHat\$cacheLeaf"
+}   # 'organizations' excludes personal Microsoft accounts
 $script:GraphScopeStr = (@($Scopes | ForEach-Object { "https://graph.microsoft.com/$_" }) + @('openid', 'profile', 'offline_access')) -join ' '
 $script:GraphToken    = $null
 
@@ -361,6 +367,7 @@ if (-not $DeviceCode) {
     $cached = Read-SignInCache
     if ($cached -and $cached.RefreshToken) {
         if ([string]$cached.ClientId -ne [string]$script:GraphClientId) { Write-Warning 'The saved sign-in was made with a different app registration; signing in again.' }
+        elseif ($TenantId -and $cached.TenantId -and [string]$cached.TenantId -ne 'organizations' -and [string]$cached.TenantId -ne [string]$TenantId) { Write-Warning "The saved sign-in at $SignInCachePath is for tenant $($cached.TenantId), not $TenantId; signing in again." }
         else {
             try {
                 Request-GraphToken -Body @{ grant_type = 'refresh_token'; refresh_token = [string]$cached.RefreshToken }
