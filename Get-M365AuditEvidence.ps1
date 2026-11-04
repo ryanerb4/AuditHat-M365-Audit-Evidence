@@ -266,13 +266,32 @@ function Request-GraphToken {
     $script:GraphToken = [pscustomobject]@{ AccessToken = $r.access_token; RefreshToken = $r.refresh_token; ExpiresAt = (Get-Date).AddSeconds([int]$r.expires_in) }
     Connect-MgGraph -AccessToken (ConvertTo-SecureString $r.access_token -AsPlainText -Force) -NoWelcome -ErrorAction Stop | Out-Null
 }
+$script:ConsentNeeded = [ordered]@{}   # service -> scopes the connector has not been approved for in this tenant; printed with approval links at the end of the run
+function Get-TokenScope {
+    # The delegated permissions (scp claim) inside an access token. Microsoft issues a token even when the tenant has not
+    # approved the permission for that service; such a token carries no rights and the service answers "UnAuthorized".
+    param([string]$Jwt)
+    try {
+        $p = $Jwt.Split('.')[1].Replace('-', '+').Replace('_', '/'); switch ($p.Length % 4) { 2 { $p += '==' } 3 { $p += '=' } }
+        return [string](([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($p)) | ConvertFrom-Json).scp)
+    } catch { return $null }
+}
+function Get-ConsentLink {
+    # One-time admin approval of exactly these delegated permissions for the connector in this tenant.
+    param([string]$Scopes)
+    "https://login.microsoftonline.com/$($ctx.TenantId)/v2.0/adminconsent?client_id=$($script:GraphClientId)&redirect_uri=http://localhost&scope=$($Scopes -replace ' ', '%20')"
+}
 function Request-ResourceToken {
     # Uses the refresh token from the browser sign-in to get a delegated token for another Microsoft API (same app, same user).
-    param([string]$ScopeStr)
+    param([string]$ScopeStr, [string]$RequireScope)
     if (-not $script:GraphToken -or -not $script:GraphToken.RefreshToken) { return $null }
     $body = @{ grant_type = 'refresh_token'; refresh_token = $script:GraphToken.RefreshToken; client_id = $script:GraphClientId; scope = $ScopeStr }
     $r = Invoke-RestMethod -Method Post -Uri "https://login.microsoftonline.com/$($script:AuthTenant)/oauth2/v2.0/token" -Body $body -ContentType 'application/x-www-form-urlencoded' -ErrorAction Stop
     if ($r.refresh_token) { $script:GraphToken.RefreshToken = $r.refresh_token }
+    if ($RequireScope) {
+        $scp = Get-TokenScope $r.access_token
+        if ($null -ne $scp -and (" $scp " -notlike "* $RequireScope *")) { throw "The connector's $RequireScope permission has not been approved (consent) in this tenant, so the token carries no rights for this service." }
+    }
     return $r.access_token
 }
 function Save-SignInCache {
@@ -593,13 +612,13 @@ if ($TestPermissions) {
     Test-GraphGet 'SharePoint tenant sharing settings'       'v1.0/admin/sharepoint/settings'                                     'SharePointTenantSettings.Read.All plus SharePoint Administrator or Global Reader'
     $null = Get-GraphReportCsv "getOffice365ActiveUserCounts(period='D7')" 'permission test report'
     Add-PermResult 'Usage reports (Teams, SharePoint, OneDrive)' $(if (Get-GraphFailure 'permission test report') { 'NO PERMISSION' } else { 'OK' }) $(if (Get-GraphFailure 'permission test report') { "Reports.Read.All plus Reports Reader or Global Reader. $(Get-GraphFailure 'permission test report')" } else { '' })
-    function Test-ResourceToken { param([string]$Cap, [string]$ScopeStr, [string]$Needs)
+    function Test-ResourceToken { param([string]$Cap, [string]$ScopeStr, [string]$Needs, [string]$RequireScope)
         if (-not $script:GraphToken -or -not $script:GraphToken.RefreshToken) { Add-PermResult $Cap 'SKIPPED' 'Device-code sign-in has no refresh token; run the browser sign-in to test this'; return $null }
-        try { $tok = Request-ResourceToken $ScopeStr; Add-PermResult $Cap 'OK' ''; return $tok }
+        try { $tok = Request-ResourceToken $ScopeStr -RequireScope $RequireScope; Add-PermResult $Cap 'OK' ''; return $tok }
         catch { $m = $_.Exception.Message; try { $b = $_.ErrorDetails.Message; if ($b) { $j = $b | ConvertFrom-Json; if ($j.error_description) { $m = ([string]$j.error_description -split "`r?`n")[0] } } } catch { Write-Verbose 'Token error body was not JSON.' }; Add-PermResult $Cap $(if ($m -match 'AADSTS65001|AADSTS650|consent') { 'NOT CONSENTED' } else { 'FAILED' }) "$Needs. $m"; return $null }
     }
-    $exoTok   = Test-ResourceToken 'Exchange Online single sign-on'          'https://outlook.office365.com/.default' 'Office 365 Exchange Online > Exchange.Manage (delegated); without it a second sign-in prompt appears'
-    $null     = Test-ResourceToken 'Teams admin API (tenant Teams policies)' '48ac35b8-9aa8-4d74-927d-1f4a14a0b239/.default' 'Skype and Teams Tenant Admin API > user_impersonation (delegated); optional, also needs the MicrosoftTeams module'
+    $exoTok   = Test-ResourceToken 'Exchange Online single sign-on'          'https://outlook.office365.com/.default' 'Office 365 Exchange Online > Exchange.Manage (delegated); without it a second sign-in prompt appears' -RequireScope 'Exchange.Manage'
+    $null     = Test-ResourceToken -RequireScope 'user_impersonation' 'Teams admin API (tenant Teams policies)' '48ac35b8-9aa8-4d74-927d-1f4a14a0b239/.default' 'Skype and Teams Tenant Admin API > user_impersonation (delegated); optional, also needs the MicrosoftTeams module'
     $mdeTok   = Test-ResourceToken 'Defender for Endpoint API consent'      'https://api.securitycenter.microsoft.com/Machine.Read https://api.securitycenter.microsoft.com/Software.Read https://api.securitycenter.microsoft.com/Vulnerability.Read' 'WindowsDefenderATP > Machine.Read, Software.Read, Vulnerability.Read (delegated)'
     if ($mdeTok) {
         try { Invoke-RestMethod -Method Get -Uri 'https://api.securitycenter.microsoft.com/api/machines?$top=1' -Headers @{ Authorization = "Bearer $mdeTok" } -ErrorAction Stop | Out-Null; Add-PermResult 'Defender for Endpoint licence' 'OK' '' }
@@ -760,8 +779,8 @@ function Get-StatusKind { param($Status)
     $v = [string]$Status
     if ($v -match '^(Enabled|Enforced|Deployed|Blocked|Yes|All enrolled|Restricted|Target met|Complete|Configured|Onboarded|None found|Clear|On track|Done|Pass|True|Compliant|Required|Improved|Resolved|Low|On$|Active|Succeeded|success|Verified|\d+ polic)') { return 'good' }
     if ($v -match '^(Not available|Not collected|Not measured|Not checked|Not scanned|Not applicable|Unknown|n/a|Baseline|Skipped)') { return 'na' }
-    if ($v -match '^(Disabled|Not enforced|Not blocked|No$|Not deployed|None$|None \(|Not started|Active external|Allowed by policy|Below target|Missing|Licensed, not configured|Licensed, not deployed|Attention needed|\d+ urgent|Anyone links|Off track|Urgent|False|Off$|Regressed|New$|High|Critical|Not configured|Not published|Not licensed|Slipping|Failed|Inactive|Impaired|Noncompliant|Not registered|Action needed|enabledForReportingButNotEnforced)') { return 'warn' }
-    if ($v -match '^(Partial|Partly deployed|Allowed|All users allowed|No Windows|EOP only|No email domains|No devices onboarded|Guests present|In progress|\d+ to review|Review|Changed|Medium|Holding|Soft fail|Neutral|One selector|none \(monitor|quarantine|reportOnly|Pass all)') { return 'mid' }
+    if ($v -match '^(Disabled|Not enforced|Not blocked|No$|Not deployed|None$|None \(|Not started|Active external|Allowed by policy|Below target|Missing|Licensed, not configured|Licensed, not deployed|Licensed, not assigned|Licensed, setup not finished|Licensed, no onboarding policy|Attention needed|\d+ urgent|Anyone links|Off track|Urgent|False|Off$|Regressed|New$|High|Critical|Not configured|Not published|Not licensed|Slipping|Failed|Inactive|Impaired|Noncompliant|Not registered|Action needed|enabledForReportingButNotEnforced)') { return 'warn' }
+    if ($v -match '^(Partial|Partly deployed|Onboarding policy in place|Licensed, deployment not verified|Allowed|All users allowed|No Windows|EOP only|No email domains|No devices onboarded|Guests present|In progress|\d+ to review|Review|Changed|Medium|Holding|Soft fail|Neutral|One selector|none \(monitor|quarantine|reportOnly|Pass all)') { return 'mid' }
     if ($v -match '^(\d+ assignments|\d+ \/ \d+|Info)') { return 'info' }
     return 'info'
 }
@@ -1746,14 +1765,16 @@ if (-not $SkipExchange) {
             # Single sign-on: reuse the browser sign-in's refresh token for an Exchange Online token so there is no second prompt.
             $exoToken = $null
             if ($script:GraphToken -and $script:GraphToken.RefreshToken) {
-                try { $exoToken = Request-ResourceToken 'https://outlook.office365.com/.default' }
+                try { $exoToken = Request-ResourceToken 'https://outlook.office365.com/.default' -RequireScope 'Exchange.Manage' }
                 catch {
                     $m = $_.Exception.Message
                     try { $b = $_.ErrorDetails.Message; if ($b) { $j = $b | ConvertFrom-Json; if ($j.error_description) { $m = ([string]$j.error_description -split "`r?`n")[0] } } } catch { Write-Verbose 'Token error body was not JSON.' }
-                    Write-Warning "Exchange Online single sign-on is not available ($m). A second sign-in prompt will appear. To avoid it next time, a Global Administrator grants the connector the 'Office 365 Exchange Online > Exchange.Manage' delegated permission (admin consent: https://login.microsoftonline.com/$($ctx.TenantId)/adminconsent?client_id=$($script:GraphClientId))."
+                    if ($m -match 'consent|AADSTS65001|not been approved') { $script:ConsentNeeded['Exchange Online'] = 'https://outlook.office365.com/Exchange.Manage'; Write-Warning "Exchange Online: the connector's read-only Exchange permission is not approved in this tenant, so Exchange cannot reuse your sign-in. $(if ($NonInteractive) { 'Exchange is skipped in -NonInteractive mode.' } else { 'Signing in to Exchange separately (a second browser prompt).' }) The one-time approval link is printed at the end of the run." }
+                    else { Write-Warning "Exchange Online single sign-on is not available ($m). $(if ($NonInteractive) { 'Exchange is skipped in -NonInteractive mode.' } else { 'A second sign-in prompt will appear.' })" }
                 }
             }
             if ($exoToken) { $exoParams.AccessToken = $exoToken; $exoParams.Remove('Organization'); $exoSingleSignOn = $true }
+            elseif ($NonInteractive) { throw 'Exchange Online needs its own sign-in in this tenant, and -NonInteractive does not allow a prompt.' }
             Connect-ExchangeOnline @exoParams
             $exoCollected = $true
 
@@ -1967,7 +1988,9 @@ if (-not $SkipExchange) {
                 'Authentication policies defined'                 = $(if ($authPolicies) { Join-List ($authPolicies | ForEach-Object { $ap = $_; $basic = @($ap.PSObject.Properties | Where-Object { $_.Name -like 'AllowBasicAuth*' -and $_.Value -eq $true } | ForEach-Object { $_.Name -replace 'AllowBasicAuth', '' }); "$($ap.Name) (basic auth allowed: $(if ($basic.Count) { $basic -join ',' } else { 'none' }))" }) '; ' } else { 'None' })
             }
         } catch {
-            Write-Warning "Exchange Online collection failed: $($_.Exception.Message)"
+            $exoErr = [string]$_.Exception.Message
+            if ($exoErr -match '(?i)unauthori[sz]ed|\b401\b|access ?denied') { $exoErr = "Exchange Online refused $($ctx.Account) ($exoErr). The account needs an Exchange role: Global Reader, View-Only Organization Management or Exchange Administrator." }
+            Write-Warning "Exchange Online collection failed: $exoErr"
             $exoKv = [ordered]@{ 'Exchange Online' = "Collection failed: $($_.Exception.Message)" }
         } finally { try { Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch { Write-Verbose 'Exchange Online session was already closed.' } }
     } else {
@@ -2070,7 +2093,8 @@ elseif ($script:GraphToken -and $script:GraphToken.RefreshToken) {
         $mdeCheck = if ($msg -match 'AADSTS65001|AADSTS650|consent') { 'consent' } elseif ($msg -match '403|Forbidden|Unauthorized|401') { 'role' } else { 'error' }
         $mdeNote = if ($mdeCheck -eq 'consent') { "The Defender for Endpoint permissions (Machine.Read, Software.Read, Vulnerability.Read) have not been approved for this app in the tenant. A Global Administrator approves them once at $mdeConsentUrl" } elseif ($msg -match '403|Forbidden|Unauthorized|401') { "Defender for Endpoint API refused the request ($($msg -replace '\s+', ' ')). The signed-in account lacks a Defender role (Security Reader), or Defender has never been set up: open https://security.microsoft.com once as an administrator to finish setup." } else { "Not collected: $($msg -replace '\s+', ' ')" }
         if ($msg -match '(?i)no active license|not licensed') { $script:HasMDE = $false; $mdeCheck = 'licence'; $mdeNote = 'Not licensed: the Defender for Endpoint API reports no active licence for this tenant (the subscription includes Defender for Office 365 but not Defender for Endpoint / Defender for Business device onboarding).' }
-        Write-Warning "Defender for Endpoint: $mdeNote"
+        Write-Verbose "Defender for Endpoint API: $mdeNote"
+        if ($mdeCheck -eq 'consent') { $script:ConsentNeeded['Defender for Endpoint'] = 'https://api.securitycenter.microsoft.com/Machine.Read https://api.securitycenter.microsoft.com/Software.Read https://api.securitycenter.microsoft.com/Vulnerability.Read' }
     }
 } else { $mdeNote = 'Not collected: device-code sign-in was used (no refresh token for the Defender API).'; $mdeCheck = 'devicecode' }
 # Coverage: active Windows and macOS devices known to Entra ID / Intune that should report to Defender for Endpoint.
@@ -2079,6 +2103,80 @@ $mdeOnboarded = @($mdeRows | Where-Object { $_['Onboarding'] -in @('Onboarded', 
 $mdeNames = @{}; foreach ($r in $mdeOnboarded) { $n = ([string]$r['Device'] -split '\.')[0].ToUpper(); if ($n) { $mdeNames[$n] = $true } }
 $mdeMissingRows = @(foreach ($d in $mdeEligible) { if (-not $mdeNames.ContainsKey(([string]$d['Device']).ToUpper())) { [ordered]@{ 'Device' = $d['Device']; 'OS' = $d['OS']; 'Intune' = $d['Intune']; 'Owner / primary user' = $d['Owner / primary user']; 'Last activity' = $d['Last activity'] } } })
 $mdeCovered = $mdeEligible.Count - $mdeMissingRows.Count
+# Licence detail and Intune onboarding policy describe licensing, setup and deployment even when the Defender API cannot be read.
+$mdePlanRx = '^WINDEFATP|^MDE_SMB|^DEFENDER_ENDPOINT|^MDE_LITE|Microsoft_Defender_For_Endpoint'
+$mdeSkus = @(@($skus) | Where-Object { $_ -and $_.capabilityStatus -eq 'Enabled' -and @($_.servicePlans | Where-Object { $_.servicePlanName -match $mdePlanRx -and $_.provisioningStatus -ne 'Disabled' }).Count })
+$mdeAssigned = [int](@($mdeSkus | ForEach-Object { [int]$_.consumedUnits }) | Measure-Object -Sum).Sum
+$mdePurchased = [int](@($mdeSkus | ForEach-Object { [int]$_.prepaidUnits.enabled }) | Measure-Object -Sum).Sum
+$mdeSeatsText = if ($mdeSkus.Count) { "$mdeAssigned of $mdePurchased licences assigned, $(Join-List ($mdeSkus | ForEach-Object { $_.skuPartNumber }) ', ')" } else { 'No licence detail' }
+$mdeProvisioning = @($mdeSkus | ForEach-Object { $_.servicePlans } | Where-Object { $_.servicePlanName -match $mdePlanRx -and $_.provisioningStatus -ne 'Disabled' } | ForEach-Object { [string]$_.provisioningStatus } | Select-Object -Unique)
+$mdeSetupPending = [bool]($script:HasMDE -and $mdeProvisioning.Count -and -not ($mdeProvisioning -contains 'Success'))
+$mdeEdrPolicies = @(@($settingsCatalog) | Where-Object { $_ -and $_.templateReference.templateFamily -eq 'endpointSecurityEndpointDetectionAndResponse' })
+$mdeEdrAssigned = @($mdeEdrPolicies | Where-Object { @($_.assignments).Count -gt 0 })
+$mdeEdrText = if (-not $script:HasIntune) { 'Intune is not licensed, so there is no Intune onboarding policy to check' } elseif (-not $mdeEdrPolicies.Count) { 'No endpoint detection and response (EDR) onboarding policy in Intune' } else { "$($mdeEdrPolicies.Count) EDR onboarding policy(ies) in Intune, $($mdeEdrAssigned.Count) assigned to devices ($(Join-List ($mdeEdrPolicies | ForEach-Object { $_.name }) '; '))" }
+$mdeVerifyNote = switch ($mdeCheck) {
+    'consent'    { 'Device-level detail was not read because the read-only Defender permissions are not approved for the report in this tenant (approval link at the end of the run and in section 16).' }
+    'role'       { 'Device-level detail was not read because Defender refused the account that ran the report (it needs Security Reader), or Defender has never been opened to finish setup.' }
+    'devicecode' { 'Device-level detail was not read because the device-code sign-in cannot reach the Defender API.' }
+    default      { if ($mdeNote -and -not $mdeCollected) { "Device-level detail was not read: $mdeNote" } else { '' } }
+}
+$mdeVerifyTodoHtml = switch ($mdeCheck) {
+    'consent'    { " To see every device, a Global Administrator approves the read-only Defender permissions once: <a href='$(HtmlEnc $mdeConsentUrl)' target='_blank' rel='noopener'>approve Defender for Endpoint read access</a> (the browser then shows a localhost page that does not load; that is expected), and the report is run again." }
+    'role'       { " To see every device, give the account that runs the report the <b>Security Reader</b> role and run the report again." }
+    'devicecode' { ' To see every device, run the report with the normal browser sign-in (without -DeviceCode).' }
+    default      { '' }
+}
+$mdeOnboardHtml = "Onboard devices through Intune: Endpoint security &gt; Endpoint detection and response, one policy for Windows and one for macOS, with the Defender connector turned on (<a href='https://security.microsoft.com/securitysettings/endpoints/onboarding' target='_blank' rel='noopener'>Defender onboarding settings</a>). Without Intune, use the onboarding package from the same page."
+# Deployment stage: licensed? set up? assigned? deployed to every active Windows / macOS device? healthy?
+$mdeAttention = @($mdeOnboarded | Where-Object { $_['Risk'] -eq 'High' -or $_['Sensor health'] -ne 'Active' }).Count
+$mdeStatus = if ($script:HasMDE -eq $false) { 'Not licensed' }
+    elseif ($mdeCollected) { if ($mdeOnboarded.Count -eq 0) { $(if ($mdeSetupPending) { 'Licensed, setup not finished' } else { 'Licensed, not deployed' }) } elseif ($mdeAttention) { 'Attention needed' } elseif ($mdeMissingRows.Count) { 'Partly deployed' } else { 'Deployed' } }
+    elseif ($mdeSetupPending) { 'Licensed, setup not finished' }
+    elseif ($mdeSkus.Count -and $mdeAssigned -eq 0) { 'Licensed, not assigned' }
+    elseif ($script:HasIntune -and $mdeEdrPolicies.Count -eq 0) { 'Licensed, no onboarding policy' }
+    elseif ($mdeEdrAssigned.Count) { 'Onboarding policy in place (devices not verified)' }
+    else { 'Licensed, deployment not verified' }
+$mdeCoverageText = if ($mdeEligible.Count) { "$mdeCovered of $($mdeEligible.Count) active Windows and macOS devices onboarded ($([math]::Round(100 * $mdeCovered / $mdeEligible.Count))%)" } else { "$($mdeOnboarded.Count) device(s) onboarded; no active Windows or macOS devices in Entra ID or Intune to compare against" }
+$mdeEvidence = switch -Regex ($mdeStatus) {
+    '^Not licensed'                  { 'No Defender for Endpoint or Defender for Business plan in the subscribed licences, so devices have no Microsoft endpoint detection and response (EDR). A third-party EDR product would not show here.'; break }
+    '^Licensed, setup not finished'  { "$($script:MdePlan) is licensed ($mdeSeatsText), but Microsoft reports the plan as $(Join-List $mdeProvisioning ', '), so Defender has not been set up and no device is protected."; break }
+    '^Licensed, not assigned'        { "$($script:MdePlan) is in the subscription, but none of its $mdePurchased licences is assigned to a user. $mdeVerifyNote"; break }
+    '^Licensed, not deployed'        { "$($script:MdePlan) is licensed ($mdeSeatsText) but no devices are onboarded, so the licence is not protecting anything yet. $($mdeEligible.Count) active Windows and macOS device(s) should be onboarded."; break }
+    '^(Licensed, no onboarding|Onboarding policy|Licensed, deployment)' { "$($script:MdePlan) is licensed ($mdeSeatsText). $mdeEdrText. $mdeVerifyNote"; break }
+    default                          { "$($script:MdePlan): $mdeCoverageText; $($mdeKv['Devices at high risk (active alerts)']) at high risk; sensors active / inactive / impaired $($mdeKv['Sensor health: active / inactive / impaired']); exposure score $($mdeKv['Organization exposure score (0-100, lower is better)'])." }
+}
+$mdeEvidence = ([string]$mdeEvidence).Trim()
+$mdeMeaning = switch -Regex ($mdeStatus) {
+    '^Not licensed'                  { 'Devices have no Microsoft endpoint detection and response. If another product (for example CrowdStrike or SentinelOne) protects them, record it in the minutes; this report cannot see third-party tools.'; break }
+    '^Licensed, setup not finished'  { 'Defender is paid for but has not been switched on, so no device is protected.'; break }
+    '^Licensed, not assigned'        { 'The licence is not assigned to anyone, so devices are almost certainly not protected and the institution is not licensed to protect them.'; break }
+    '^Licensed, not deployed'        { 'The licence is paid for, but no device sends data to Defender. Attacks on workstations would not be detected or contained.'; break }
+    '^Licensed, no onboarding'       { 'Devices are probably not onboarded: Intune is the usual way to onboard them and it has no policy for it. Devices onboarded another way (script or Group Policy) could not be confirmed.'; break }
+    '^Onboarding policy'             { 'Onboarding is set up in Intune, but the report could not confirm which devices actually report to Defender.'; break }
+    '^Licensed, deployment'          { 'Defender is licensed, but the report could not see how or whether devices are onboarded.'; break }
+    '^Partly deployed'               { 'Some devices are protected; the devices listed below are not, and an attacker only needs one.'; break }
+    '^Attention needed'              { 'Defender is deployed, but some devices are at high risk or have stopped reporting.'; break }
+    default                          { 'Every active Windows and macOS device reports to Defender and none is at high risk.' }
+}
+$mdeTodoHtml = switch -Regex ($mdeStatus) {
+    '^Not licensed'                  { 'Decide whether to license Defender for Business (included in Microsoft 365 Business Premium, or as an add-on) or Defender for Endpoint, or record the endpoint protection product in use instead.'; break }
+    '^Licensed, setup not finished'  { "Open the <a href='https://security.microsoft.com' target='_blank' rel='noopener'>Defender portal</a> as a Global or Security Administrator to finish setting up $(HtmlEnc $script:MdePlan). Then $($mdeOnboardHtml.Substring(0,1).ToLower() + $mdeOnboardHtml.Substring(1))"; break }
+    '^Licensed, not assigned'        { "Assign the licence to every user whose device should be protected (Microsoft 365 admin center &gt; Users &gt; Active users &gt; Licenses and apps), then onboard devices.$mdeVerifyTodoHtml"; break }
+    '^Licensed, not deployed'        { $mdeOnboardHtml; break }
+    '^Licensed, no onboarding'       { "$mdeOnboardHtml$mdeVerifyTodoHtml"; break }
+    '^Onboarding policy'             { "Confirm in the <a href='https://security.microsoft.com/machines' target='_blank' rel='noopener'>Defender portal</a> that every device appears.$mdeVerifyTodoHtml"; break }
+    '^Licensed, deployment'          { "Confirm how devices are onboarded and check the <a href='https://security.microsoft.com/machines' target='_blank' rel='noopener'>Defender portal</a> device list.$mdeVerifyTodoHtml"; break }
+    '^Partly deployed'               { 'Onboard the devices listed below, or retire them if they are no longer in use.'; break }
+    '^Attention needed'              { "Investigate the high-risk devices and fix inactive sensors in the <a href='https://security.microsoft.com/machines' target='_blank' rel='noopener'>Defender portal</a>."; break }
+    default                          { 'Keep it: review high-risk devices and new devices every month.' }
+}
+$mdeStatusHtml = "<table class='kv'><tbody><tr><th>Deployment status</th><td>$(New-StatusBadge $mdeStatus)</td></tr><tr><th>Licence</th><td>$(HtmlEnc $(if ($script:HasMDE) { $script:MdePlan } else { 'Not licensed' }))</td></tr>" +
+    $(if ($script:HasMDE) { "<tr><th>Licences assigned</th><td>$(HtmlEnc $mdeSeatsText)</td></tr><tr><th>Intune onboarding policy</th><td>$(HtmlEnc $mdeEdrText)</td></tr>" } else { '' }) +
+    $(if ($mdeCollected) { "<tr><th>Coverage</th><td>$(HtmlEnc $mdeCoverageText)</td></tr>" } elseif ($script:HasMDE -and $mdeVerifyNote) { "<tr><th>Device-level detail</th><td>$(HtmlEnc $mdeVerifyNote)</td></tr>" } else { '' }) +
+    "<tr><th>What this means</th><td>$(HtmlEnc $mdeMeaning)</td></tr><tr><th>What to do</th><td>$mdeTodoHtml</td></tr></tbody></table>"
+# Console: lead with what was found about licensing, setup and deployment; the permission gap is a secondary note.
+$mdeConsole = "Defender for Endpoint: $mdeStatus. $mdeEvidence"
+if ((Get-StatusKind $mdeStatus) -in @('warn', 'mid')) { Write-Warning $mdeConsole } else { Write-Host $mdeConsole -ForegroundColor DarkGray }
 $MdeFilters = @(@{ Label = 'High risk'; Tag = 'highrisk' }, @{ Label = 'High exposure'; Tag = 'highexposure' }, @{ Label = 'Inactive sensor'; Tag = 'inactive' }, @{ Label = 'Stale'; Tag = 'stale' })
 
 $UserByUpn = @{}; foreach ($u in $users) { if ($u.userPrincipalName) { $UserByUpn[([string]$u.userPrincipalName).ToLower()] = $u } }
@@ -2324,7 +2422,7 @@ if (Get-Module -ListAvailable MicrosoftTeams) {
     if ($script:GraphToken -and $script:GraphToken.RefreshToken) {
         try {
             Write-Host "Collecting Teams tenant policies..." -ForegroundColor Cyan
-            $teamsToken = Request-ResourceToken '48ac35b8-9aa8-4d74-927d-1f4a14a0b239/.default'
+            $teamsToken = Request-ResourceToken '48ac35b8-9aa8-4d74-927d-1f4a14a0b239/.default' -RequireScope 'user_impersonation'
             Import-Module MicrosoftTeams -ErrorAction Stop
             Connect-MicrosoftTeams -AccessTokens @($script:GraphToken.AccessToken, $teamsToken) -ErrorAction Stop | Out-Null
             function Invoke-TeamsSafe { param([scriptblock]$Script, [string]$What) try { return (& $Script) } catch { Write-Verbose "Could not read $What : $($_.Exception.Message)"; return $null } }
@@ -2353,6 +2451,7 @@ if (Get-Module -ListAvailable MicrosoftTeams) {
         } catch {
             $msg = $_.Exception.Message
             try { $body = $_.ErrorDetails.Message; if ($body) { $j = $body | ConvertFrom-Json; if ($j.error_description) { $msg = ([string]$j.error_description -split "`r?`n")[0] } } } catch { Write-Verbose 'Teams error body was not JSON.' }
+            if ($msg -match 'AADSTS65001|AADSTS650|consent') { $script:ConsentNeeded['Teams tenant policies'] = '48ac35b8-9aa8-4d74-927d-1f4a14a0b239/user_impersonation' }
             $teamsPolicyNote = if ($msg -match 'AADSTS65001|AADSTS650|consent') { "The Skype and Teams Tenant Admin API permission has not been consented for the connector. A Global Administrator can grant it at https://login.microsoftonline.com/$($ctx.TenantId)/adminconsent?client_id=$($script:GraphClientId)" } else { "Teams tenant policies could not be read: $msg" }
             Write-Warning "Teams policies: $teamsPolicyNote"
         } finally { try { Disconnect-MicrosoftTeams -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch { Write-Verbose 'Teams session was already closed.' } }
@@ -2683,42 +2782,6 @@ $defenderStatus = if (-not $exoCollected -or -not $defenderCollected) { 'Not col
                   else { 'Licensed, not configured' }
 $defenderEvidence = if (-not $exoCollected) { $exoKv['Exchange Online'] }
     else { "Defender for Office 365: $(if ($script:HasDefenderP2) { 'Plan 2' } elseif ($script:HasDefenderP1) { 'Plan 1' } else { 'not licensed' }). Preset security policies enabled: $presetOn of $(@($presetRows).Count). Anti-spam policies: $(@($spamRows).Count); anti-phishing: $(@($phishRows).Count); Safe Links active: $safeLinksActive; Safe Attachments active: $safeAttachActive. Defender for SharePoint/OneDrive/Teams: $(if ($atpGlobal) { $atpGlobal.EnableATPForSPOTeamsODB } else { 'n/a' }); Safe Documents: $(if ($atpGlobal) { $atpGlobal.EnableSafeDocs } else { 'n/a' })." }
-# Deployment stage: licensed? deployed to every active Windows / macOS device? healthy? Or why it could not be checked.
-$mdeAttention = @($mdeOnboarded | Where-Object { $_['Risk'] -eq 'High' -or $_['Sensor health'] -ne 'Active' }).Count
-$mdeStatus = if ($script:HasMDE -eq $false) { 'Not licensed' }
-    elseif (-not $mdeCollected) { switch ($mdeCheck) { 'consent' { 'Not checked: permission not approved' } 'role' { 'Not checked: access refused' } 'devicecode' { 'Not checked: device-code sign-in' } default { 'Not checked' } } }
-    elseif ($mdeOnboarded.Count -eq 0) { 'Licensed, not deployed' }
-    elseif ($mdeAttention) { 'Attention needed' }
-    elseif ($mdeMissingRows.Count) { 'Partly deployed' }
-    else { 'Deployed' }
-$mdeCoverageText = if ($mdeEligible.Count) { "$mdeCovered of $($mdeEligible.Count) active Windows and macOS devices onboarded ($([math]::Round(100 * $mdeCovered / $mdeEligible.Count))%)" } else { "$($mdeOnboarded.Count) device(s) onboarded; no active Windows or macOS devices in Entra ID or Intune to compare against" }
-$mdeEvidence = switch -Regex ($mdeStatus) {
-    '^Not licensed'           { 'No Defender for Endpoint or Defender for Business plan in the subscribed licences, so devices have no Microsoft endpoint detection and response (EDR). A third-party EDR product would not show here.'; break }
-    '^Not checked'            { $mdeNote; break }
-    '^Licensed, not deployed' { "$script:MdePlan is licensed but no devices are onboarded, so the licence is not protecting anything yet. $($mdeEligible.Count) active Windows and macOS device(s) should be onboarded."; break }
-    default                   { "$($script:MdePlan): $mdeCoverageText; $($mdeKv['Devices at high risk (active alerts)']) at high risk; sensors active / inactive / impaired $($mdeKv['Sensor health: active / inactive / impaired']); exposure score $($mdeKv['Organization exposure score (0-100, lower is better)'])." }
-}
-$mdeMeaning = switch -Regex ($mdeStatus) {
-    '^Not licensed'           { 'Devices have no Microsoft endpoint detection and response. If another product (for example CrowdStrike or SentinelOne) protects them, record it in the minutes; this report cannot see third-party tools.'; break }
-    '^Not checked: permission' { 'Defender is licensed, but the report was not allowed to read it, so deployment is unknown.'; break }
-    '^Not checked'            { 'Defender is licensed, but the report could not read it, so deployment is unknown.'; break }
-    '^Licensed, not deployed' { 'The licence is paid for, but no device sends data to Defender. Attacks on workstations would not be detected or contained.'; break }
-    '^Partly deployed'        { 'Some devices are protected; the devices listed below are not, and an attacker only needs one.'; break }
-    '^Attention needed'       { 'Defender is deployed, but some devices are at high risk or have stopped reporting.'; break }
-    default                   { 'Every active Windows and macOS device reports to Defender and none is at high risk.' }
-}
-$mdeTodoHtml = switch -Regex ($mdeStatus) {
-    '^Not licensed'           { 'Decide whether to license Defender for Business (included in Microsoft 365 Business Premium, or as an add-on) or Defender for Endpoint, or record the endpoint protection product in use instead.'; break }
-    '^Not checked: permission' { "A Global Administrator approves the read-only Defender permissions once: <a href='$(HtmlEnc $mdeConsentUrl)' target='_blank' rel='noopener'>approve Defender for Endpoint read access</a>. After Accept the browser shows a localhost page that does not load; that is expected. Then run the report again."; break }
-    '^Not checked: access'    { "Give the account that runs the report the <b>Security Reader</b> role, and open the <a href='https://security.microsoft.com/machines' target='_blank' rel='noopener'>Defender portal</a> once as an administrator if Defender has never been set up. Then run the report again."; break }
-    '^Not checked: device'    { 'Run the report with the normal browser sign-in (without -DeviceCode).'; break }
-    '^Not checked'            { HtmlEnc $mdeNote; break }
-    '^Licensed, not deployed' { "Onboard devices through Intune: Endpoint security &gt; Endpoint detection and response, one policy for Windows and one for macOS, with the Defender connector turned on (<a href='https://security.microsoft.com/securitysettings/endpoints/onboarding' target='_blank' rel='noopener'>Defender onboarding settings</a>). Without Intune, use the onboarding package from the same page."; break }
-    '^Partly deployed'        { 'Onboard the devices listed below, or retire them if they are no longer in use.'; break }
-    '^Attention needed'       { "Investigate the high-risk devices and fix inactive sensors in the <a href='https://security.microsoft.com/machines' target='_blank' rel='noopener'>Defender portal</a>."; break }
-    default                   { 'Keep it: review high-risk devices and new devices every month.' }
-}
-$mdeStatusHtml = "<table class='kv'><tbody><tr><th>Deployment status</th><td>$(New-StatusBadge $mdeStatus)</td></tr><tr><th>Licence</th><td>$(HtmlEnc $(if ($script:HasMDE) { $script:MdePlan } else { 'Not licensed' }))</td></tr>$(if ($mdeCollected) { "<tr><th>Coverage</th><td>$(HtmlEnc $mdeCoverageText)</td></tr>" })<tr><th>What this means</th><td>$(HtmlEnc $mdeMeaning)</td></tr><tr><th>What to do</th><td>$mdeTodoHtml</td></tr></tbody></table>"
 
 $script:summaryRows = @()
 function Add-SummaryRow { param($control, $status, $evidence, $link) $script:summaryRows += [ordered]@{ 'Control' = $control; 'Status' = $status; 'Evidence' = $evidence; 'Section' = $link } }
@@ -3108,7 +3171,7 @@ $remediationGuides = @(
     @{ Control = 'DKIM signing (Exchange Online and DNS)';        Bad = '^(Partial|Missing)';      Priority = 'High';     Action = 'On the Defender portal DKIM page create the keys for each domain, publish the two selector CNAME records it shows in public DNS, then enable signing. Without DKIM, DMARC cannot reach reject and forwarded mail fails authentication.'; Url = 'https://security.microsoft.com/dkimv2' }
     @{ Control = 'DMARC policy (DNS)';                            Bad = '^(Partial|Missing)';      Priority = 'High';     Action = 'Publish a _dmarc TXT record with aggregate reporting, monitor for two to four weeks, then move to p=quarantine and p=reject at pct=100. DMARC is what actually tells the world''s mail servers to refuse mail spoofing the institution. DNS change, not a Microsoft 365 setting.'; Url = 'https://learn.microsoft.com/microsoft-365/security/office-365-security/email-authentication-dmarc-configure' }
     @{ Control = 'Email protection (Defender for Office 365 / EOP)'; Bad = '^(Licensed, not configured|EOP only)'; Priority = 'High'; Action = 'If Defender for Office 365 is licensed, enable the Standard preset security policy for all users (Strict for executives and finance) so Safe Links, Safe Attachments and impersonation protection apply. If it is not licensed, license Plan 1 (included in Business Premium); phishing is the top attack path against bank staff.' }
-    @{ Control = 'Endpoint protection (Defender for Endpoint)';  Bad = '^(Attention needed|No devices onboarded|Not licensed|Licensed, not deployed|Partly deployed)'; Priority = 'Medium'; Action = 'Onboard every managed Windows and macOS device to Defender for Endpoint / Defender for Business through Intune, resolve high-risk alerts, and re-onboard or retire devices with inactive sensors.' }
+    @{ Control = 'Endpoint protection (Defender for Endpoint)';  Bad = '^(Attention needed|No devices onboarded|Not licensed|Licensed, not deployed|Licensed, not assigned|Licensed, setup not finished|Licensed, no onboarding policy|Partly deployed)'; Priority = 'Medium'; Action = 'Onboard every managed Windows and macOS device to Defender for Endpoint / Defender for Business through Intune, resolve high-risk alerts, and re-onboard or retire devices with inactive sensors.' }
 )
 # Where each control is changed: the admin center page the ticket should point at (Secure Score items carry Microsoft's own link)
 $ControlPortalUrl = @{
@@ -3954,7 +4017,7 @@ $concealFinding = $remediationSorted | Where-Object { $_.Finding -eq 'Usage repo
 if ($ualEnabled -eq $false) { $issueRows += [ordered]@{ 'Issue' = 'Activity logging is off'; 'Type' = 'Coverage gap'; 'What the committee is asked to decide' = 'Direct the IT provider to turn on the unified audit log this week; until then intrusion and data-leak checks cannot be completed.'; 'Who' = 'IT committee directs; IT provider / MSP implements'; 'Phase' = 'Now: this week'; '_html' = @{ 'Issue' = $(if ($ualFinding) { "<a href='#rem-$($ualFinding.Ref)'>Activity logging is off</a> <button type='button' class='tk' data-i='$($remIndexByRef[[string]$ualFinding.Ref])'>View ticket</button>" } else { "<a href='#ioc'>Activity logging is off</a>" }) } } }
 if ($reportConcealedNote) { $issueRows += [ordered]@{ 'Issue' = 'Usage report names are concealed'; 'Type' = 'Coverage gap'; 'What the committee is asked to decide' = 'Approve clearing the report privacy setting so OneDrive, site and team owners are named.'; 'Who' = 'IT committee approves; IT provider / MSP implements'; 'Phase' = 'Now: this week'; '_html' = @{ 'Issue' = $(if ($concealFinding) { "<a href='#rem-$($concealFinding.Ref)'>Usage report names are concealed</a> <button type='button' class='tk' data-i='$($remIndexByRef[[string]$concealFinding.Ref])'>View ticket</button>" } else { "<a href='#sharepoint'>Usage report names are concealed</a>" }) } } }
 if ($shareSitesDenied -gt 0) { $issueRows += [ordered]@{ 'Issue' = "$shareSitesDenied site(s) could not be read by the account that ran the report"; 'Type' = 'Coverage gap'; 'What the committee is asked to decide' = 'Run the report as a SharePoint administrator with site access, or accept that sharing on those sites is unverified.'; 'Who' = 'Security officer'; 'Phase' = 'Next 30 days'; '_links' = @{ 'Issue' = '#sharing' } } }
-if ($mdeStatus -match '^Not checked') { $issueRows += [ordered]@{ 'Issue' = 'Device protection (Defender for Endpoint) could not be checked'; 'Type' = 'Coverage gap'; 'What the committee is asked to decide' = $(if ($mdeCheck -eq 'consent') { 'Ask a Global Administrator to approve the read-only Defender permissions (link in section 16), so the next report shows whether every device is protected.' } else { 'Give the reporting account read access to Defender (Security Reader), so the next report shows whether every device is protected.' }); 'Who' = 'Security officer; IT provider / MSP implements'; 'Phase' = 'Next 30 days'; '_links' = @{ 'Issue' = '#mde' } } }
+if ($script:HasMDE -and -not $mdeCollected -and $mdeCheck -in @('consent', 'role')) { $issueRows += [ordered]@{ 'Issue' = 'Device protection (Defender for Endpoint) could not be verified device by device'; 'Type' = 'Coverage gap'; 'What the committee is asked to decide' = $(if ($mdeCheck -eq 'consent') { 'Ask a Global Administrator to approve the read-only Defender permissions (link in section 16), so the next report shows whether every device is protected.' } else { 'Give the reporting account read access to Defender (Security Reader), so the next report shows whether every device is protected.' }); 'Who' = 'Security officer; IT provider / MSP implements'; 'Phase' = 'Next 30 days'; '_links' = @{ 'Issue' = '#mde' } } }
 if ($script:HasEntraP1 -eq $false) { $issueRows += [ordered]@{ 'Issue' = 'Entra ID P1 not licensed'; 'Type' = 'Coverage gap'; 'What the committee is asked to decide' = 'Without P1 there is no Conditional Access, sign-in log or risk policy; decide whether to license it (included in Business Premium).'; 'Who' = 'IT committee'; 'Phase' = 'Next 90 days'; '_links' = @{ 'Issue' = '#remediation' } } }
 $issueRows = @($issueRows)
 # Plan by phase and the GLBA board-report mapping
@@ -4352,6 +4415,11 @@ if ($ticketRows.Count) {
     Write-Host "Remediation tickets (CSV): $ticketCsvPath" -ForegroundColor Green
 }
 if (($SaveSignIn -or $script:SignInFromCache) -and $script:GraphToken -and $script:GraphToken.RefreshToken) { Save-SignInCache }   # the token rotates during the run; keep the newest
+if ($script:ConsentNeeded.Count) {
+    Write-Host ''
+    Write-Warning "One-time approval needed in this tenant: the connector's read-only permissions for $(Join-List @($script:ConsentNeeded.Keys) ' and ') are not approved here, so those parts of the report are incomplete. A Global Administrator opens each link below once and clicks Accept. The browser then shows a localhost page that does not load; that is expected. Run the report again afterwards."
+    foreach ($k in $script:ConsentNeeded.Keys) { Write-Host "  $k :" -ForegroundColor Yellow; Write-Host "  $(Get-ConsentLink $script:ConsentNeeded[$k])" }
+}
 if (-not $NoOpen -and -not $NonInteractive) { try { Start-Process -FilePath $reportPath -ErrorAction Stop } catch { Write-Verbose "Could not open the report automatically: $($_.Exception.Message)" } }
 
 # ----------------------------------------------------------------------------------------------

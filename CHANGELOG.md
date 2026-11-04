@@ -14,6 +14,18 @@ the report footer.
   Entra ID and Intune and lists the ones not onboarded. Devices only discovered on the network are
   no longer counted as onboarded. When Defender could not be checked, the first page lists it as a
   coverage gap. The approval link now requests exactly the three Defender permissions.
+- Defender for Endpoint status no longer depends on the Defender API alone. Licence detail
+  (licences assigned, whether Microsoft has finished setting the plan up) and the Intune EDR
+  onboarding policy give: Licensed, setup not finished; Licensed, not assigned; Licensed, no
+  onboarding policy; Onboarding policy in place (devices not verified). The run output leads with
+  that finding; a missing permission is a secondary note.
+- Exchange Online, Teams and Defender tokens are checked for the expected permission before use.
+  A tenant that approved only the Graph permissions now gets "the connector's Exchange permission
+  is not approved" and a fallback Exchange sign-in instead of "UnAuthorized"; an UnAuthorized
+  answer otherwise explains the Exchange role needed. `-NonInteractive` skips Exchange instead of
+  prompting.
+- End of run: "One-time approval needed in this tenant" lists each service whose permission is
+  missing, with one approval link per service.
 
 - Saved sign-ins are kept per tenant when `-TenantId` is given, so auditing a second organization
   from the same PC no longer reuses the first organization's sign-in. A saved sign-in for a different
