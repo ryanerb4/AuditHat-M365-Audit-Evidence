@@ -24,6 +24,10 @@ the report footer.
   is not approved" and a fallback Exchange sign-in instead of "UnAuthorized"; an UnAuthorized
   answer otherwise explains the Exchange role needed. `-NonInteractive` skips Exchange instead of
   prompting.
+- Sign-in asks for everything in the app registration (`.default`) instead of a list of Graph
+  permissions, so a new organization's Global Administrator approves Graph, Exchange Online,
+  Defender for Endpoint and Teams on one screen at first sign-in. Missing permissions print the
+  single approval link.
 - End of run: "One-time approval needed in this tenant" lists each service whose permission is
   missing, with one approval link per service.
 

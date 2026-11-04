@@ -240,14 +240,19 @@ Write-Host ""
 # (or let a failed browser flow fall back) to sign in with a device code instead.
 
 $script:GraphClientId = $ClientId
-$script:AuthTenant    = if ($TenantId) { $TenantId } else { 'organizations' }
+$script:AuthTenant    = if ($TenantId) { $TenantId } else { 'organizations' }   # 'organizations' excludes personal Microsoft accounts
 # One saved sign-in per tenant: with -TenantId the default file is named after the tenant, so auditing a second
 # organization never silently reuses the first organization's sign-in.
 if (-not $SignInCachePath) {
     $cacheLeaf = if ($TenantId) { "M365AuditEvidence-$(($TenantId -replace '[^A-Za-z0-9.-]', '_').ToLower()).signin" } else { 'M365AuditEvidence.signin' }
     $SignInCachePath = Join-Path $env:LOCALAPPDATA "AuditHat\$cacheLeaf"
-}   # 'organizations' excludes personal Microsoft accounts
-$script:GraphScopeStr = (@($Scopes | ForEach-Object { "https://graph.microsoft.com/$_" }) + @('openid', 'profile', 'offline_access')) -join ' '
+}
+# '.default' asks for every permission listed in the app registration, across all services. The first sign-in by a
+# Global Administrator therefore shows ONE approval screen covering Microsoft Graph, Exchange Online, Defender for
+# Endpoint and Teams, instead of approving Graph only and needing a second approval later. $Scopes (above) is still
+# the list the report needs; it is compared with the token after sign-in.
+$script:GraphScopeStr = 'https://graph.microsoft.com/.default openid profile offline_access'
+$script:AdminConsentUrlFor = { param($Tenant) "https://login.microsoftonline.com/$Tenant/adminconsent?client_id=$($script:GraphClientId)" }
 $script:GraphToken    = $null
 
 function ConvertTo-Base64Url { param([byte[]]$Bytes) return ([Convert]::ToBase64String($Bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')) }
@@ -437,8 +442,9 @@ if ($SaveSignIn -or $script:SignInFromCache) {
 }
 $missingScopes = @($Scopes | Where-Object { $ctx.Scopes -notcontains $_ })
 if ($missingScopes.Count) {
-    Write-Warning "The following Graph permissions were not granted; related sections will show as not available: $($missingScopes -join ', ')$(if ($script:SignInFromCache) { '. The saved sign-in predates these permissions: run once with -ForgetSignIn -SaveSignIn to consent and save again.' })"
-    Write-Warning "A Global Administrator must run the script once and accept the consent prompt to grant them."
+    Write-Warning "The following Graph permissions are not approved in this tenant; related sections will show as not available: $($missingScopes -join ', ')"
+    if ($ClientId -eq $DefaultGraphClientId) { Write-Warning "A Global Administrator approves every permission the report uses once at $(& $script:AdminConsentUrlFor $ctx.TenantId) (tick 'Consent on behalf of your organization' if asked). Then run the report again." }
+    else { Write-Warning "Add them to your app registration's API permissions and click 'Grant admin consent' (README, 'Register your own app')." }
 }
 
 if (-not (Test-Path $OutputFolder)) { New-Item -ItemType Directory -Path $OutputFolder | Out-Null }
@@ -4418,6 +4424,10 @@ if (($SaveSignIn -or $script:SignInFromCache) -and $script:GraphToken -and $scri
 if ($script:ConsentNeeded.Count) {
     Write-Host ''
     Write-Warning "One-time approval needed in this tenant: the connector's read-only permissions for $(Join-List @($script:ConsentNeeded.Keys) ' and ') are not approved here, so those parts of the report are incomplete. A Global Administrator opens each link below once and clicks Accept. The browser then shows a localhost page that does not load; that is expected. Run the report again afterwards."
+    if ($ClientId -eq $DefaultGraphClientId) {
+        Write-Host '  One link approves everything the report uses:' -ForegroundColor Yellow; Write-Host "  $(& $script:AdminConsentUrlFor $ctx.TenantId)"
+        Write-Host '  Or approve each service on its own:' -ForegroundColor DarkGray
+    }
     foreach ($k in $script:ConsentNeeded.Keys) { Write-Host "  $k :" -ForegroundColor Yellow; Write-Host "  $(Get-ConsentLink $script:ConsentNeeded[$k])" }
 }
 if (-not $NoOpen -and -not $NonInteractive) { try { Start-Process -FilePath $reportPath -ErrorAction Stop } catch { Write-Verbose "Could not open the report automatically: $($_.Exception.Message)" } }

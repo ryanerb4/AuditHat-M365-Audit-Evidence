@@ -227,13 +227,12 @@ and its own history.
    If their policy does not allow third-party enterprise applications, register an app in their
    tenant instead (see "Register your own app") and pass its `-ClientId` on every run for them.
 
-   The approval given during the first sign-in covers the Microsoft Graph permissions only.
-   Exchange Online, Defender for Endpoint and Teams policies are separate Microsoft services with
-   their own permission. When one of them is not approved, the run says so for that service
-   (Exchange then asks for its own sign-in instead of failing) and, at the end, prints one
-   approval link per service under "One-time approval needed in this tenant". A Global
-   Administrator opens each link once and clicks Accept. The browser then shows a localhost page
-   that does not load, which is expected. The next run covers everything.
+   That one approval covers Microsoft Graph, Exchange Online, Defender for Endpoint and Teams
+   together. Organizations that approved an older version of the script may have approved Graph
+   only. The run then says which service is not approved (Exchange asks for its own sign-in instead
+   of failing) and, at the end, prints the approval link under "One-time approval needed in this
+   tenant". A Global Administrator opens it once and clicks Accept; the per-service links that
+   follow it end on a localhost page that does not load, which is expected.
 2. **Sign in with an account in that organization.** Use a Global Reader there, plus View-Only
    Organization Management in Exchange (see "Which account to sign in with"). Use a member account
    of their tenant: guest accounts and partner (GDAP) access are not tested and Exchange Online
@@ -285,8 +284,11 @@ No local admin rights are needed. Modules install with `-Scope CurrentUser`.
 ### Which account to sign in with
 
 - **First run in a tenant:** a **Global Administrator** (or Privileged Role Administrator / Cloud
-  Application Administrator). Microsoft Graph will show a one-time consent prompt for the read-only
-  permissions below. Accept it.
+  Application Administrator). Microsoft shows one approval screen listing every read-only permission
+  below, for Microsoft Graph, Exchange Online, Defender for Endpoint and Teams together. Tick
+  **Consent on behalf of your organization** and click Accept. The administrator can instead
+  approve ahead of time at
+  `https://login.microsoftonline.com/<tenant>/adminconsent?client_id=ae173bf3-ba47-4ab8-ac54-3ea92fa6c337`.
 - **Every run after that:** **Global Reader** is enough for all Graph sections, including the usage
   reports behind the Teams and SharePoint inventories and the SharePoint tenant settings. The
   Exchange Online section additionally needs **View-Only Organization Management** or **Exchange
@@ -314,9 +316,10 @@ Teams Tenant Admin API > user_impersonation** for the Teams policies. Microsoft 
 Endpoint needs `Machine.Read`, `Software.Read` and `Vulnerability.Read` on the WindowsDefenderATP API.
 
 The script never requests a write scope and only runs `Get-*` cmdlets. Nothing in the tenant is
-changed. **After an upgrade that adds permissions, the first sign-in asks a Global Administrator to
-accept the new read-only permissions once**; a non-admin sees "Need admin approval" until that is
-done, or an admin uses the consent link printed by the script.
+changed. The sign-in asks for everything listed in the app registration (`.default`), so one
+approval covers every service. **After an upgrade that adds permissions, the run lists what is not
+approved yet and prints the approval link**; a Global Administrator opens it once. A non-admin sees
+"Need admin approval" until a tenant has approved the connector.
 
 ### Register your own app (needed if sign-in fails with AADSTS700016)
 
