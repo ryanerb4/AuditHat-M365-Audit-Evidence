@@ -113,6 +113,7 @@ param(
     [switch]$SkipInboxRules,       # skip per-mailbox inbox rule scan (slow on large tenants)
     [switch]$DeviceCode,           # sign in with a device code instead of the browser (for remote sessions or if the browser flow fails)
     [switch]$NoHistory,            # do not read or write the per-tenant history file used for the progress charts and change log
+    [switch]$NoCache,              # do not read or write the local log cache (sign-ins and directory audit events); download the full window every run
     [switch]$NoOpen,               # do not open the finished report in the default browser
     [switch]$NoLog,                # do not write the run log and errors log to the output folder
     [switch]$SkipAuditLog,         # skip the unified audit log search (sharing, downloads, mailbox rule changes) used for indications of compromise
@@ -528,20 +529,50 @@ $OutputFolder = (Resolve-Path $OutputFolder).Path
 # ----------------------------------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------------------------------
+function Format-Elapsed { param([TimeSpan]$t)
+    if ($t.TotalHours -ge 1) { return ('{0}h {1:00}m' -f [int][Math]::Floor($t.TotalHours), $t.Minutes) }
+    if ($t.TotalMinutes -ge 1) { return ('{0}m {1:00}s' -f [int][Math]::Floor($t.TotalMinutes), $t.Seconds) }
+    return ('{0:0}s' -f $t.TotalSeconds)
+}
 function Get-GraphAll {
-    param([Parameter(Mandatory)][string]$Uri, [switch]$NoPaging, [int]$MaxItems = 0)
+    # -Progress names a progress bar for long reads; with -Since (the start of a log window) it also shows how far back
+    # in the window the newest-first log has been read, the percentage and the time left.
+    param([Parameter(Mandatory)][string]$Uri, [switch]$NoPaging, [int]$MaxItems = 0, [string]$Progress, $Since)
     $items = New-Object System.Collections.Generic.List[object]
-    $next = $Uri
+    $next = $Uri; $pages = 0; $t0 = Get-Date
+    $activity = if ($Progress) { $Progress } else { 'Reading from Microsoft Graph' }
     while ($next) {
         Confirm-GraphToken
         $r = Invoke-MgGraphRequest -Method GET -Uri $next -OutputType PSObject -Headers @{ ConsistencyLevel = 'eventual' }
+        $pages++
         if ($null -ne $r.PSObject.Properties['value']) {
             foreach ($v in $r.value) { $items.Add($v) }
         } else {
             $items.Add($r)
         }
         $next = if ($NoPaging -or ($MaxItems -gt 0 -and $items.Count -ge $MaxItems)) { $null } else { $r.'@odata.nextLink' }
+        if ($next -and ($Progress -or $pages -ge 2)) {
+            $elapsed = (Get-Date) - $t0
+            $status = "{0:N0} records, page {1}, {2} so far" -f $items.Count, $pages, (Format-Elapsed $elapsed)
+            $pct = -1
+            if ($null -ne $Since -and $items.Count) {
+                $last = $items[$items.Count - 1]; $dt = $null
+                foreach ($pn in @('createdDateTime', 'activityDateTime')) { $pp = $last.PSObject.Properties[$pn]; if ($pp -and $pp.Value) { try { $dt = ([datetime]$pp.Value).ToUniversalTime() } catch { $dt = $null }; break } }
+                if ($dt) {
+                    $nowU = (Get-Date).ToUniversalTime(); $win = ($nowU - ([datetime]$Since).ToUniversalTime()).TotalSeconds
+                    if ($win -gt 0) {
+                        $frac = [Math]::Min(0.99, [Math]::Max(0.0, ($nowU - $dt).TotalSeconds / $win)); $pct = [int](100 * $frac)
+                        $status += ", back to $($dt.ToLocalTime().ToString('MMM d HH:mm'))"
+                        if ($frac -ge 0.05) { $status += ", about $(Format-Elapsed ([TimeSpan]::FromSeconds($elapsed.TotalSeconds * (1 - $frac) / $frac))) left" }
+                    }
+                }
+            }
+            if ($pct -ge 0) { Write-Progress -Id 2 -ParentId 1 -Activity $activity -Status $status -PercentComplete $pct } else { Write-Progress -Id 2 -ParentId 1 -Activity $activity -Status $status }
+            # the progress bar is not kept in the run log, so long reads also leave a line every ten pages
+            if ($pages % 10 -eq 0) { Write-Host "      $activity : $status" -ForegroundColor DarkGray }
+        }
     }
+    if ($pages -ge 2 -or $Progress) { Write-Progress -Id 2 -ParentId 1 -Activity $activity -Completed }
     return $items
 }
 
@@ -562,8 +593,8 @@ function Get-GraphErrorText {
     return "$status$msg$(if ($code) { " [$code]" })$hint"
 }
 function Get-GraphAllSafe {
-    param([string]$Uri, [string]$What, [switch]$NoPaging, [int]$MaxItems = 0)
-    try { return (Get-GraphAll -Uri $Uri -NoPaging:$NoPaging -MaxItems $MaxItems) }
+    param([string]$Uri, [string]$What, [switch]$NoPaging, [int]$MaxItems = 0, [string]$Progress, $Since)
+    try { return (Get-GraphAll -Uri $Uri -NoPaging:$NoPaging -MaxItems $MaxItems -Progress $Progress -Since $Since) }
     catch {
         $reason = Get-GraphErrorText $_
         # Graph returns a bare 400/403 for unlicensed features; explain from the tenant's own subscriptions when we can.
@@ -580,6 +611,94 @@ function Get-GraphAllSafe {
     }
 }
 function Get-GraphFailure { param([string]$What) if ($script:GraphFailures.ContainsKey($What)) { return $script:GraphFailures[$What] } ; return $null }
+
+# ----------------------------------------------------------------------------------------------
+# Run progress: "[n/N] step (elapsed)" on screen and in the run log, an overall progress bar, and
+# the time each step took. N is the number of Write-Step calls in this file; steps that do not
+# apply (Exchange skipped, no licence) are passed over, so the count can jump.
+# ----------------------------------------------------------------------------------------------
+$script:RunStart = Get-Date; $script:StepNo = 0; $script:StepStart = $null; $script:StepTotal = 0
+try { if ($PSCommandPath) { $script:StepTotal = @(Select-String -LiteralPath $PSCommandPath -Pattern '^\s*Write-Step "' -ErrorAction Stop).Count } } catch { $script:StepTotal = 0 }
+function Write-Step { param([string]$Text)
+    $now = Get-Date
+    if ($script:StepStart) { Write-Host "      took $(Format-Elapsed ($now - $script:StepStart))" -ForegroundColor DarkGray }
+    $script:StepNo++; $script:StepStart = $now
+    $tot = [Math]::Max($script:StepTotal, $script:StepNo)
+    Write-Host "[$($script:StepNo)/$tot] $Text  (run time $(Format-Elapsed ($now - $script:RunStart)))" -ForegroundColor Cyan
+    Write-Progress -Id 1 -Activity "Microsoft 365 audit evidence: step $($script:StepNo) of $tot" -Status $Text -PercentComplete ([int](100 * ($script:StepNo - 1) / $tot))
+}
+function Complete-Steps {
+    $now = Get-Date
+    if ($script:StepStart) { Write-Host "      took $(Format-Elapsed ($now - $script:StepStart))" -ForegroundColor DarkGray; $script:StepStart = $null }
+    Write-Progress -Id 1 -Activity 'Microsoft 365 audit evidence' -Completed
+    Write-Host "Finished in $(Format-Elapsed ($now - $script:RunStart))." -ForegroundColor Green
+}
+
+# ----------------------------------------------------------------------------------------------
+# Local log cache: sign-ins and directory audit events already downloaded are kept, compressed,
+# in "<output folder>\cache\<tenant id>\", so the next run downloads only what is new since the
+# last run (plus a 24-hour overlap for events Microsoft records late). Events older than the
+# window are dropped on every run. The cache never leaves this computer; -NoCache turns it off.
+# ----------------------------------------------------------------------------------------------
+$script:CacheFolder = $null
+$LogCacheOverlapHours = 24
+function Read-LogCache { param([string]$Path)
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $null }
+    $fs = $null; $gz = $null; $sr = $null
+    try {
+        $fs = [System.IO.File]::OpenRead($Path); $gz = New-Object System.IO.Compression.GZipStream($fs, [System.IO.Compression.CompressionMode]::Decompress)
+        $sr = New-Object System.IO.StreamReader($gz, [System.Text.Encoding]::UTF8); $json = $sr.ReadToEnd()
+        return ($json | ConvertFrom-Json)
+    } catch { Write-Warning "The log cache $Path could not be read ($($_.Exception.Message)); downloading the full window instead."; return $null }
+    finally { if ($sr) { $sr.Dispose() } elseif ($gz) { $gz.Dispose() } elseif ($fs) { $fs.Dispose() } }
+}
+function Write-LogCache { param([string]$Path, $Data)
+    $fs = $null; $gz = $null; $sw = $null
+    try {
+        $dir = Split-Path $Path -Parent; if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        $json = $Data | ConvertTo-Json -Depth 12 -Compress
+        $tmp = "$Path.tmp"
+        $fs = [System.IO.File]::Create($tmp); $gz = New-Object System.IO.Compression.GZipStream($fs, [System.IO.Compression.CompressionMode]::Compress)
+        $sw = New-Object System.IO.StreamWriter($gz, (New-Object System.Text.UTF8Encoding($false))); $sw.Write($json); $sw.Dispose(); $sw = $null; $gz = $null; $fs = $null
+        Move-Item -LiteralPath $tmp -Destination $Path -Force
+    } catch { Write-Warning "The log cache $Path could not be written: $($_.Exception.Message)" }
+    finally { if ($sw) { $sw.Dispose() } elseif ($gz) { $gz.Dispose() } elseif ($fs) { $fs.Dispose() } }
+}
+function Get-CachedLog {
+    # Reads a newest-first Entra log (sign-ins or directory audits) for the window starting at $Since, reusing the local
+    # cache for the part already downloaded. Returns the same records a full download would, newest first.
+    param([string]$Name, [string]$Resource, [string]$DateField, [string]$Filter, [string]$Select, [datetime]$Since, [string]$What, [int]$MaxItems = 0)
+    $sinceU = $Since.ToUniversalTime(); $fetchedAt = (Get-Date).ToUniversalTime()
+    $key = "$Resource|$Filter|$Select"
+    $path = if ($script:CacheFolder) { Join-Path $script:CacheFolder ((($Name -replace '[^A-Za-z0-9 ._-]', '-').Trim()) + '.json.gz') } else { $null }
+    $cache = Read-LogCache $path
+    $from = $sinceU; $kept = @()
+    if ($cache -and [string]$cache.Key -eq $key -and -not $cache.Capped) {
+        $cFrom = ([datetime]$cache.From).ToUniversalTime(); $cAt = ([datetime]$cache.FetchedAt).ToUniversalTime()
+        if ($cFrom -le $sinceU -and $cAt -gt $sinceU) {
+            $from = $cAt.AddHours(-$LogCacheOverlapHours); if ($from -lt $sinceU) { $from = $sinceU }
+            $kept = @(@($cache.Items) | Where-Object { $_ -and $_.$DateField -and ([datetime]$_.$DateField).ToUniversalTime() -ge $sinceU -and ([datetime]$_.$DateField).ToUniversalTime() -lt $from })
+        }
+    }
+    $f = "$DateField ge $($from.ToString('yyyy-MM-ddTHH:mm:ssZ'))"; if ($Filter) { $f += " and ($Filter)" }
+    $uri = "$Resource`?`$filter=$([uri]::EscapeDataString($f))$(if ($Select) { "&`$select=$Select" })&`$top=999"
+    $new = @(Get-GraphAllSafe $uri $What -MaxItems $MaxItems -Progress "Reading $What" -Since $from)
+    if (Get-GraphFailure $What) { return @() }
+    $capped = $MaxItems -gt 0 -and $new.Count -ge $MaxItems
+    $all = New-Object System.Collections.Generic.List[object]; $seen = @{}
+    foreach ($it in @($new) + $(if ($capped) { @() } else { $kept })) {
+        $id = [string]$it.id; if ($id) { if ($seen.ContainsKey($id)) { continue }; $seen[$id] = $true }
+        # dates are stored as ISO text so Windows PowerShell 5.1 and PowerShell 7 read the cache the same way
+        if ($it.$DateField -is [datetime]) { $it.$DateField = $it.$DateField.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
+        $all.Add($it)
+    }
+    $sorted = @($all | Sort-Object @{ Expression = { ([datetime]$_.$DateField).ToUniversalTime() }; Descending = $true })
+    if ($MaxItems -gt 0 -and $sorted.Count -gt $MaxItems) { $sorted = @($sorted | Select-Object -First $MaxItems); $capped = $true }
+    if ($path) { Write-LogCache $path ([ordered]@{ Key = $key; From = $sinceU.ToString('yyyy-MM-ddTHH:mm:ssZ'); FetchedAt = $fetchedAt.ToString('yyyy-MM-ddTHH:mm:ssZ'); Capped = $capped; Items = $sorted }) }
+    if ($kept.Count) { Write-Host "      $What : $($new.Count) new record(s) downloaded, $($kept.Count) reused from the local cache" -ForegroundColor DarkGray }
+    elseif ($sorted.Count -ge 1000) { Write-Host "      $What : $($sorted.Count) record(s) downloaded" -ForegroundColor DarkGray }
+    return $sorted
+}
 function Get-GraphReportCsv {
     # Microsoft 365 usage reports (Teams, SharePoint, OneDrive) come back as CSV behind a redirect; download and parse.
     param([string]$Report, [string]$What)
@@ -1010,7 +1129,7 @@ function Format-SettingValue { param($v)
 # ----------------------------------------------------------------------------------------------
 # 1. Tenant overview
 # ----------------------------------------------------------------------------------------------
-Write-Host "Collecting tenant information..." -ForegroundColor Cyan
+Write-Step "Collecting tenant information..."
 $org = (Get-GraphAllSafe 'v1.0/organization' 'organization') | Select-Object -First 1
 $skus = Get-GraphAllSafe 'v1.0/subscribedSkus' 'subscribed SKUs'
 $SkuMap = @{}
@@ -1058,7 +1177,7 @@ $domainRows = foreach ($d in (@($org.verifiedDomains) | Sort-Object @{ Expressio
 }
 
 # Microsoft Secure Score: current score, target, comparison averages, and the improvement actions (for the remediation plan).
-Write-Host "Collecting Microsoft Secure Score..." -ForegroundColor Cyan
+Write-Step "Collecting Microsoft Secure Score..."
 $secureScore   = (Get-GraphAllSafe 'v1.0/security/secureScores?$top=1' 'Microsoft Secure Score' -NoPaging) | Select-Object -First 1
 $scoreProfiles = if ($secureScore) { Get-GraphAllSafe 'v1.0/security/secureScoreControlProfiles' 'Secure Score control profiles' } else { @() }
 $scoreCurrent = $null; $scoreMax = $null; $scorePct = $null; $scoreTarget = $null; $scoreGap = $null; $scoreCompareText = ''
@@ -1082,7 +1201,7 @@ if ($secureScore -and $secureScore.maxScore) {
 # ----------------------------------------------------------------------------------------------
 # 2. Intune compliance policies
 # ----------------------------------------------------------------------------------------------
-Write-Host "Collecting Intune compliance policies..." -ForegroundColor Cyan
+Write-Step "Collecting Intune compliance policies..."
 $compliancePolicies = Get-GraphAllSafe 'v1.0/deviceManagement/deviceCompliancePolicies?$expand=assignments,scheduledActionsForRule($expand=scheduledActionConfigurations)' 'compliance policies'
 $complianceSummary  = (Get-GraphAllSafe 'v1.0/deviceManagement/deviceCompliancePolicyDeviceStateSummary' 'compliance state summary') | Select-Object -First 1
 $complianceSettings = (Get-GraphAllSafe 'v1.0/deviceManagement?$select=settings' 'compliance policy settings') | Select-Object -First 1
@@ -1160,7 +1279,7 @@ foreach ($grp in $policyGroups) {
 # ----------------------------------------------------------------------------------------------
 # 3. Intune device configuration profiles
 # ----------------------------------------------------------------------------------------------
-Write-Host "Collecting Intune configuration profiles and policies..." -ForegroundColor Cyan
+Write-Step "Collecting Intune configuration profiles and policies..."
 $configProfiles  = Get-GraphAllSafe 'v1.0/deviceManagement/deviceConfigurations?$expand=assignments' 'device configuration profiles'
 $settingsCatalog = Get-GraphAllSafe 'beta/deviceManagement/configurationPolicies?$expand=assignments' 'settings catalog policies'
 $secIntents      = Get-GraphAllSafe 'beta/deviceManagement/intents?$expand=assignments' 'endpoint security policies'
@@ -1263,7 +1382,7 @@ $mamRows = foreach ($m in ($appProtection | Sort-Object displayName)) {
 # ----------------------------------------------------------------------------------------------
 # 3b. Intune managed devices vs Entra devices
 # ----------------------------------------------------------------------------------------------
-Write-Host "Collecting Intune managed devices and Entra devices..." -ForegroundColor Cyan
+Write-Step "Collecting Intune managed devices and Entra devices..."
 $managedDevices = Get-GraphAllSafe 'v1.0/deviceManagement/managedDevices?$top=999' 'Intune managed devices'
 $entraDeviceSelect = 'id,deviceId,displayName,operatingSystem,operatingSystemVersion,trustType,isManaged,isCompliant,accountEnabled,approximateLastSignInDateTime,registrationDateTime,managementType,profileType,manufacturer,model'
 $entraDevices = @()
@@ -1293,7 +1412,7 @@ $deviceStats = [ordered]@{
 # ----------------------------------------------------------------------------------------------
 # 4. Conditional Access
 # ----------------------------------------------------------------------------------------------
-Write-Host "Collecting Conditional Access policies..." -ForegroundColor Cyan
+Write-Step "Collecting Conditional Access policies..."
 $caPolicies = Get-GraphAllSafe 'v1.0/identity/conditionalAccess/policies' 'Conditional Access policies'
 $namedLocations = Get-GraphAllSafe 'v1.0/identity/conditionalAccess/namedLocations' 'named locations'
 $LocMap = @{}; foreach ($l in $namedLocations) { $LocMap[$l.id] = $l.displayName }
@@ -1356,10 +1475,11 @@ $namedLocRows = foreach ($l in $namedLocations) {
 # ----------------------------------------------------------------------------------------------
 # 5/6. Enterprise applications, permissions, and consent audit events
 # ----------------------------------------------------------------------------------------------
-Write-Host "Collecting directory audit events (last $AuditDays days)..." -ForegroundColor Cyan
+Write-Step "Collecting directory audit events (last $AuditDays days)..."
+if (-not $NoCache -and $org -and $org.id) { $script:CacheFolder = Join-Path $OutputFolder "cache\$($org.id)" }
 $since = (Get-Date).AddDays(-$AuditDays).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
 $auditFilter = "activityDateTime ge $since and (activityDisplayName eq 'Consent to application' or activityDisplayName eq 'Add service principal' or activityDisplayName eq 'Add app role assignment to service principal' or activityDisplayName eq 'Add delegated permission grant' or activityDisplayName eq 'Add app role assignment grant to user')"
-$auditEvents = Get-GraphAllSafe "v1.0/auditLogs/directoryAudits?`$filter=$([uri]::EscapeDataString($auditFilter))&`$top=999" 'directory audit log'
+$auditEvents = Get-CachedLog -Name 'directory audit - consent and apps' -Resource 'v1.0/auditLogs/directoryAudits' -DateField 'activityDateTime' -Filter ($auditFilter -replace '^activityDateTime ge \S+ and ', '') -Since ([datetime]$since) -What 'directory audit log'
 
 $ConsentBySp = @{}      # servicePrincipal id -> list of "date : actor : activity"
 $auditRows = @()
@@ -1375,7 +1495,7 @@ foreach ($e in ($auditEvents | Sort-Object activityDateTime -Descending)) {
     }
 }
 
-Write-Host "Collecting enterprise applications and permissions..." -ForegroundColor Cyan
+Write-Step "Collecting enterprise applications and permissions..."
 $servicePrincipals = Get-GraphAllSafe 'v1.0/servicePrincipals?$filter=tags/any(t:t eq ''WindowsAzureActiveDirectoryIntegratedApp'')&$select=id,appId,displayName,accountEnabled,servicePrincipalType,appOwnerOrganizationId,publisherName,verifiedPublisher,createdDateTime,appRoleAssignmentRequired,signInAudience,homepage,tags&$top=999' 'enterprise applications'
 $MicrosoftTenants = @('f8cdef31-a31e-4b4a-93e4-5f571e91255a', '72f988bf-86f1-41af-91ab-2d7cd011db47')
 
@@ -1461,7 +1581,7 @@ $appGovKv = [ordered]@{
 # ----------------------------------------------------------------------------------------------
 # 7. Users
 # ----------------------------------------------------------------------------------------------
-Write-Host "Collecting users..." -ForegroundColor Cyan
+Write-Step "Collecting users..."
 $userSelect = 'id,displayName,userPrincipalName,accountEnabled,userType,createdDateTime,jobTitle,department,assignedLicenses,onPremisesSyncEnabled,onPremisesDomainName,onPremisesLastSyncDateTime,signInActivity'
 $users = @()
 try { $users = Get-GraphAll "v1.0/users?`$select=$userSelect&`$top=999" }
@@ -1627,7 +1747,7 @@ $userStats = [ordered]@{
 # ----------------------------------------------------------------------------------------------
 # 8. Privileged roles
 # ----------------------------------------------------------------------------------------------
-Write-Host "Collecting directory role members..." -ForegroundColor Cyan
+Write-Step "Collecting directory role members..."
 $roleRows = @()
 $privHtml = New-Object System.Text.StringBuilder
 $RolePriority = @('Global Administrator', 'Privileged Role Administrator', 'Privileged Authentication Administrator', 'Security Administrator', 'Exchange Administrator', 'SharePoint Administrator', 'Intune Administrator', 'Conditional Access Administrator', 'Application Administrator', 'Cloud Application Administrator', 'User Administrator', 'Authentication Administrator', 'Helpdesk Administrator', 'Global Reader')
@@ -1671,7 +1791,7 @@ $privStats = [ordered]@{
 # ----------------------------------------------------------------------------------------------
 # 9. Authentication methods, TAP, security defaults, device registration policy
 # ----------------------------------------------------------------------------------------------
-Write-Host "Collecting authentication method policy and tenant security settings..." -ForegroundColor Cyan
+Write-Step "Collecting authentication method policy and tenant security settings..."
 $secDefaults = (Get-GraphAllSafe 'v1.0/policies/identitySecurityDefaultsEnforcementPolicy' 'security defaults') | Select-Object -First 1
 $authMethodsPolicy = (Get-GraphAllSafe 'v1.0/policies/authenticationMethodsPolicy' 'authentication methods policy') | Select-Object -First 1
 $authMethods = @($authMethodsPolicy.authenticationMethodConfigurations | Where-Object { $_ })
@@ -1839,7 +1959,7 @@ $calendarShareRows = @(); $sharingPolicyText = ''; $sharedMailboxCount = 0
 if (-not $SkipExchange) {
     if (Get-Module -ListAvailable ExchangeOnlineManagement) {
         try {
-            Write-Host "Connecting to Exchange Online..." -ForegroundColor Cyan
+            Write-Step "Connecting to Exchange Online..."
             Import-Module ExchangeOnlineManagement
             $exoParams = @{ ShowBanner = $false }
             if ($TenantId) { $exoParams.Organization = $TenantId }
@@ -1936,7 +2056,7 @@ if (-not $SkipExchange) {
             $defaultAuthPolicy = $orgConfig.DefaultAuthenticationPolicy
 
             # ---- Email protection: Exchange Online Protection and Defender for Office 365 policies (each cmdlet tolerated separately)
-            Write-Host "Collecting Exchange Online Protection and Defender for Office 365 policies..." -ForegroundColor Cyan
+            Write-Step "Collecting Exchange Online Protection and Defender for Office 365 policies..."
             function Invoke-ExoSafe { param([scriptblock]$Script, [string]$What) try { return @(& $Script) } catch { Write-Verbose "Could not read $What : $($_.Exception.Message)"; return @() } }
             $dkimConfigs = Invoke-ExoSafe { Get-DkimSigningConfig } 'DKIM signing configuration'
             $spamPolicies = Invoke-ExoSafe { Get-HostedContentFilterPolicy } 'anti-spam policies'
@@ -1988,19 +2108,24 @@ if (-not $SkipExchange) {
             elseif ($ualEnabled -eq $false) { $ualNote = 'The unified audit log is turned off for this tenant (Get-AdminAuditLogConfig UnifiedAuditLogIngestionEnabled = False), so sharing, download and mailbox-rule activity cannot be reviewed.' }
             else {
                 $ualNote = ''
-                Write-Host "Searching the unified audit log (sharing, downloads, mailbox rules; last $AuditDays days)..." -ForegroundColor Cyan
+                Write-Step "Searching the unified audit log (sharing, downloads, mailbox rules; last $AuditDays days)..."
                 function Search-AuditLogSafe {
                     # Pages through Search-UnifiedAuditLog with a session; returns parsed AuditData objects (read-only).
                     param([string[]]$Operations, [int]$Days, [int]$MaxRecords, [string]$What)
                     $out = New-Object System.Collections.Generic.List[object]
                     $sid = [guid]::NewGuid().ToString()
                     $ualWarn = @()
+                    $ualT0 = Get-Date; $ualPages = 0
                     try {
                         do {
+                            $ualPages++
+                            Write-Progress -Id 2 -ParentId 1 -Activity "Searching the audit log: $What" -Status ("{0:N0} records, page {1}, {2} so far" -f $out.Count, $ualPages, (Format-Elapsed ((Get-Date) - $ualT0)))
                             $page = @(Search-UnifiedAuditLog -StartDate (Get-Date).AddDays(-$Days) -EndDate (Get-Date).AddMinutes(5) -Operations $Operations -SessionId $sid -SessionCommand ReturnLargeSet -ResultSize 5000 -ErrorAction Stop -WarningAction SilentlyContinue -WarningVariable +ualWarn)
                             foreach ($rec in $page) { try { $d = $rec.AuditData | ConvertFrom-Json; if ($d) { $out.Add($d) } } catch { Write-Verbose 'Audit record was not JSON.' } }
                         } while ($page.Count -eq 5000 -and $out.Count -lt $MaxRecords)
                     } catch { $script:GraphFailures["audit log: $What"] = $_.Exception.Message; Write-Warning "Audit log search ($What) failed: $($_.Exception.Message)" }
+                    Write-Progress -Id 2 -ParentId 1 -Activity "Searching the audit log: $What" -Completed
+                    Write-Host ("      audit log ($What): {0:N0} record(s) in {1}" -f $out.Count, (Format-Elapsed ((Get-Date) - $ualT0))) -ForegroundColor DarkGray
                     Write-ExoModuleWarning $ualWarn
                     return $out.ToArray()
                 }
@@ -2091,7 +2216,7 @@ if (-not $SkipExchange) {
 # ----------------------------------------------------------------------------------------------
 # Email authentication: SPF, DKIM, DMARC per email-enabled verified domain (public DNS, plus Exchange DKIM signing state)
 # ----------------------------------------------------------------------------------------------
-Write-Host "Checking SPF, DKIM and DMARC records..." -ForegroundColor Cyan
+Write-Step "Checking SPF, DKIM and DMARC records..."
 $dnsAvailable = [bool](Get-Command Resolve-DnsName -ErrorAction SilentlyContinue)
 function Get-DnsTxt { param([string]$Name) if (-not $dnsAvailable) { return @() } ; try { return @(Resolve-DnsName -Name $Name -Type TXT -ErrorAction Stop | Where-Object { $_.Strings } | ForEach-Object { ($_.Strings -join '') }) } catch { return @() } }
 function Get-DnsCname { param([string]$Name) if (-not $dnsAvailable) { return $null } ; try { return (Resolve-DnsName -Name $Name -Type CNAME -ErrorAction Stop | Where-Object { $_.NameHost } | Select-Object -First 1).NameHost } catch { return $null } }
@@ -2141,7 +2266,7 @@ $mdeRows = @(); $mdeKv = [ordered]@{}; $mdeCollected = $false; $mdeNote = ''; $m
 $mdeConsentUrl = "https://login.microsoftonline.com/$($ctx.TenantId)/v2.0/adminconsent?client_id=$($script:GraphClientId)&redirect_uri=http://localhost&scope=https://api.securitycenter.microsoft.com/Machine.Read%20https://api.securitycenter.microsoft.com/Software.Read%20https://api.securitycenter.microsoft.com/Vulnerability.Read"
 if ($script:HasMDE -eq $false) { $mdeNote = 'Not collected: no Defender for Endpoint or Defender for Business service plan in the subscribed SKUs.' }
 elseif ($script:GraphToken -and $script:GraphToken.RefreshToken) {
-    Write-Host "Collecting Defender for Endpoint device status..." -ForegroundColor Cyan
+    Write-Step "Collecting Defender for Endpoint device status..."
     try {
         $mdeToken = Request-ResourceToken 'https://api.securitycenter.microsoft.com/Machine.Read https://api.securitycenter.microsoft.com/Software.Read https://api.securitycenter.microsoft.com/Vulnerability.Read'
         if ($mdeToken) {
@@ -2271,7 +2396,7 @@ $UserByUpn = @{}; foreach ($u in $users) { if ($u.userPrincipalName) { $UserByUp
 # directory audit log, the sign-in log, Entra ID Protection, app registrations and Exchange (collected above).
 # Nothing here is a confirmed incident; each item is something to confirm with the people involved.
 # ----------------------------------------------------------------------------------------------
-Write-Host "Collecting indications of compromise (last $AuditDays days)..." -ForegroundColor Cyan
+Write-Step "Collecting indications of compromise (last $AuditDays days)..."
 $iocSinceDate = (Get-Date).AddDays(-$AuditDays)
 function ConvertTo-IocAuditRow {
     param($e, [string]$Issue)
@@ -2294,7 +2419,7 @@ function ConvertTo-IocAuditRow {
 }
 function Get-IocAudit {
     param([string]$Filter, [string]$What, [string]$Issue, [scriptblock]$Keep)
-    $ev = Get-GraphAllSafe "v1.0/auditLogs/directoryAudits?`$filter=$([uri]::EscapeDataString("activityDateTime ge $since and ($Filter)"))&`$top=999" $What -MaxItems 2000
+    $ev = Get-CachedLog -Name "directory audit - $What" -Resource 'v1.0/auditLogs/directoryAudits' -DateField 'activityDateTime' -Filter $Filter -Since ([datetime]$since) -What $What -MaxItems 2000
     if ($Keep) { $ev = @($ev | Where-Object $Keep) }
     return @($ev | Sort-Object activityDateTime -Descending | ForEach-Object { ConvertTo-IocAuditRow $_ $Issue })
 }
@@ -2341,6 +2466,7 @@ $iocNewUserRows = @($users | Where-Object { $_.createdDateTime -and ([datetime]$
 
 # Sign-in log (Entra ID P1): countries, legacy protocols, MFA denials, Conditional Access blocks, password spray, lockouts
 $signInDays = [Math]::Min($AuditDays, 30)
+$MaxSignInRecords = 100000
 $signInSince = (Get-Date).AddDays(-$signInDays).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
 $signInSelect = 'id,createdDateTime,userPrincipalName,userDisplayName,appDisplayName,clientAppUsed,ipAddress,location,status,riskLevelDuringSignIn,riskLevelAggregated,riskState,conditionalAccessStatus,deviceDetail'
 $iocSignInsCollected = $false
@@ -2348,11 +2474,14 @@ $countryRows = @(); $multiCountryRows = @(); $legacySignInRows = @(); $mfaDenied
 $iocSignInNote = ''
 if ($script:HasEntraP1 -eq $false) { $iocSignInNote = "Sign-in log analysis requires Entra ID P1 or P2, which is not licensed in this tenant." }
 else {
-    Write-Host "Analysing sign-ins (last $signInDays days)..." -ForegroundColor Cyan
-    $okSignIns = Get-GraphAllSafe "v1.0/auditLogs/signIns?`$filter=$([uri]::EscapeDataString("createdDateTime ge $signInSince and status/errorCode eq 0"))&`$select=$signInSelect&`$top=999" 'successful sign-ins' -MaxItems 8000
-    if (-not (Get-GraphFailure 'successful sign-ins')) {
+    Write-Step "Analysing sign-ins (last $signInDays days)..."
+    # One download of the whole window, split into successes and failure codes here: filtering on status/errorCode at
+    # Microsoft is slow (the service scans the log once per filter and can return empty pages for minutes).
+    $allSignIns = Get-CachedLog -Name 'sign-ins' -Resource 'v1.0/auditLogs/signIns' -DateField 'createdDateTime' -Filter '' -Select $signInSelect -Since ([datetime]$signInSince) -What 'sign-in log' -MaxItems $MaxSignInRecords
+    if (-not (Get-GraphFailure 'sign-in log')) {
         $iocSignInsCollected = $true
-        $capped = $okSignIns.Count -ge 8000
+        $capped = @($allSignIns).Count -ge $MaxSignInRecords
+        $okSignIns = @($allSignIns | Where-Object { [string]$_.status.errorCode -eq '0' })
         $byCountry = @{}; $userCountries = @{}
         foreach ($si in $okSignIns) {
             $c = [string]$si.location.countryOrRegion; if (-not $c) { $c = 'Unknown' }
@@ -2386,22 +2515,22 @@ else {
         $legacySignInRows = @($legacyBy.Values | Sort-Object { $_.Count } -Descending | ForEach-Object { [ordered]@{ 'User' = $_.User; 'Protocol / client' = $_.Client; 'Successful sign-ins' = $_.Count; 'Applications' = (Join-List ($_.Apps.Keys | Where-Object { $_ })); 'Countries' = (Join-List ($_.Countries.Keys | Where-Object { $_ })); 'Last' = (Format-DateText $_.Last); '_issues' = @{ 'Protocol / client' = 'ioc-legacy-signin' } } })
         $riskySignInRows = @($okSignIns | Where-Object { ([string]$_.riskLevelDuringSignIn -match '^(low|medium|high)$') -or ([string]$_.riskLevelAggregated -match '^(medium|high)$') } | Sort-Object createdDateTime -Descending | Select-Object -First 100 | ForEach-Object { [ordered]@{ 'Date (local)' = (Format-DateText $_.createdDateTime); 'User' = $_.userPrincipalName; 'Risk during sign-in' = $_.riskLevelDuringSignIn; 'Aggregated risk' = $_.riskLevelAggregated; 'Risk state' = $_.riskState; 'Application' = $_.appDisplayName; 'IP address' = $_.ipAddress; 'Location' = (Join-List (@($_.location.city, $_.location.countryOrRegion) | Where-Object { $_ }) ', '); '_issues' = @{ 'Risk during sign-in' = 'ioc-risk-detection' } } })
 
-        function Get-FailedSignIns { param([int]$Code, [string]$What) return @(Get-GraphAllSafe "v1.0/auditLogs/signIns?`$filter=$([uri]::EscapeDataString("createdDateTime ge $signInSince and status/errorCode eq $Code"))&`$select=$signInSelect&`$top=999" $What -MaxItems 5000) }
+        function Get-FailedSignIns { param([int]$Code) return @($allSignIns | Where-Object { [string]$_.status.errorCode -eq [string]$Code }) }
         function Group-SignInsByUser { param($SignIns, [string]$Issue)
             $g = @{}
             foreach ($si in $SignIns) { $u = [string]$si.userPrincipalName; if (-not $g.ContainsKey($u)) { $g[$u] = @{ Count = 0; Last = $null; Ips = @{}; Countries = @{}; Apps = @{} } }; $g[$u].Count++; $g[$u].Ips[[string]$si.ipAddress] = $true; $g[$u].Countries[[string]$si.location.countryOrRegion] = $true; $g[$u].Apps[[string]$si.appDisplayName] = $true; if (-not $g[$u].Last -or ([datetime]$si.createdDateTime) -gt $g[$u].Last) { $g[$u].Last = [datetime]$si.createdDateTime } }
             return @($g.GetEnumerator() | Sort-Object { $_.Value.Count } -Descending | ForEach-Object { $uo = $UserByUpn[$_.Key.ToLower()]; [ordered]@{ 'User' = $_.Key; 'Attempts' = $_.Value.Count; 'Distinct IP addresses' = $_.Value.Ips.Count; 'Countries' = (Join-List ($_.Value.Countries.Keys | Where-Object { $_ })); 'Applications' = (Join-List ($_.Value.Apps.Keys | Where-Object { $_ } | Select-Object -First 4)); 'Last' = (Format-DateText $_.Value.Last); 'Admin' = $(if ($uo -and $AdminIds.ContainsKey($uo.id)) { 'Yes' } else { 'No' }); '_issues' = @{ 'Attempts' = $Issue } } })
         }
-        $mfaDeniedRows = Group-SignInsByUser (Get-FailedSignIns 500121 'MFA failed sign-ins') 'ioc-mfa-denied'
-        $caBlockedRows = Group-SignInsByUser (Get-FailedSignIns 53003 'Conditional Access blocked sign-ins') 'ioc-ca-blocked'
-        $lockoutRows   = Group-SignInsByUser (Get-FailedSignIns 50053 'locked-out sign-ins') 'ioc-lockout'
-        $badPw = Get-FailedSignIns 50126 'wrong-password sign-ins'
+        $mfaDeniedRows = Group-SignInsByUser (Get-FailedSignIns 500121) 'ioc-mfa-denied'
+        $caBlockedRows = Group-SignInsByUser (Get-FailedSignIns 53003) 'ioc-ca-blocked'
+        $lockoutRows   = Group-SignInsByUser (Get-FailedSignIns 50053) 'ioc-lockout'
+        $badPw = Get-FailedSignIns 50126
         $byIp = @{}
         foreach ($si in $badPw) { $ip = [string]$si.ipAddress; if (-not $ip) { continue }; if (-not $byIp.ContainsKey($ip)) { $byIp[$ip] = @{ Count = 0; Users = @{}; Country = [string]$si.location.countryOrRegion; Last = $null } }; $byIp[$ip].Count++; $byIp[$ip].Users[[string]$si.userPrincipalName] = $true; if (-not $byIp[$ip].Last -or ([datetime]$si.createdDateTime) -gt $byIp[$ip].Last) { $byIp[$ip].Last = [datetime]$si.createdDateTime } }
         $sprayRows = @($byIp.GetEnumerator() | Where-Object { $_.Value.Users.Count -ge 3 -or $_.Value.Count -ge 20 } | Sort-Object { $_.Value.Users.Count } -Descending | Select-Object -First 50 | ForEach-Object { [ordered]@{ 'Source IP address' = $_.Key; 'Country' = $_.Value.Country; 'Failed passwords' = $_.Value.Count; 'Distinct accounts targeted' = $_.Value.Users.Count; 'Accounts (sample)' = (Join-List ($_.Value.Users.Keys | Select-Object -First 5)); 'Last attempt' = (Format-DateText $_.Value.Last); '_issues' = @{ 'Distinct accounts targeted' = 'ioc-spray' } } })
         $badPwTotal = $badPw.Count; $badPwUsers = @($badPw | ForEach-Object { $_.userPrincipalName } | Select-Object -Unique).Count
-        if ($capped) { $iocSignInNote = "Successful sign-ins were capped at 8,000 records for the country analysis; the tenant has more in the window." }
-    } else { $iocSignInNote = "Sign-in log could not be read: $(Get-GraphFailure 'successful sign-ins')" }
+        if ($capped) { $iocSignInNote = "The sign-in log was capped at $($MaxSignInRecords.ToString('N0')) records (the newest); older sign-ins in the window were not analysed." }
+    } else { $iocSignInNote = "Sign-in log could not be read: $(Get-GraphFailure 'sign-in log')" }
 }
 
 # Entra ID Protection (P2): risky users and risk detections
@@ -2458,7 +2587,7 @@ $fwdTransportAll    = @($fwdTransportRows | Where-Object { $_ })
 # ----------------------------------------------------------------------------------------------
 # Microsoft Teams (section 17): guest and external access policy, every team with owners, members, guests, activity
 # ----------------------------------------------------------------------------------------------
-Write-Host "Collecting Microsoft Teams..." -ForegroundColor Cyan
+Write-Step "Collecting Microsoft Teams..."
 $teamGroups = Get-GraphAllSafe "v1.0/groups?`$filter=$([uri]::EscapeDataString("resourceProvisioningOptions/Any(x:x eq 'Team')"))&`$select=id,displayName,visibility,createdDateTime,description,mail,classification,membershipRule,groupTypes&`$top=999" 'teams'
 $teamsActivity = @{}
 foreach ($r in (Get-GraphReportCsv "getTeamsTeamActivityDetail(period='D90')" 'Teams activity report')) { if ($r.'Team Id') { $teamsActivity[[string]$r.'Team Id'] = $r } }
@@ -2507,7 +2636,7 @@ $teamsPolicyKv = [ordered]@{}; $teamsPolicyIssues = @{}; $teamsPolicyNote = ''; 
 if (Get-Module -ListAvailable MicrosoftTeams) {
     if ($script:GraphToken -and $script:GraphToken.RefreshToken) {
         try {
-            Write-Host "Collecting Teams tenant policies..." -ForegroundColor Cyan
+            Write-Step "Collecting Teams tenant policies..."
             $teamsToken = Request-ResourceToken '48ac35b8-9aa8-4d74-927d-1f4a14a0b239/.default' -RequireScope 'user_impersonation'
             Import-Module MicrosoftTeams -ErrorAction Stop
             Connect-MicrosoftTeams -AccessTokens @($script:GraphToken.AccessToken, $teamsToken) -ErrorAction Stop | Out-Null
@@ -2566,7 +2695,7 @@ $teamsEvidence = "$(@($teamGroups).Count) teams; $teamsWithGuests with guests ($
 # ----------------------------------------------------------------------------------------------
 # SharePoint and OneDrive (section 18): tenant sharing settings, every site, every OneDrive, who shares externally
 # ----------------------------------------------------------------------------------------------
-Write-Host "Collecting SharePoint and OneDrive..." -ForegroundColor Cyan
+Write-Step "Collecting SharePoint and OneDrive..."
 $spoSettings = (Get-GraphAllSafe 'v1.0/admin/sharepoint/settings' 'SharePoint tenant settings' -NoPaging) | Select-Object -First 1
 $spoKv = [ordered]@{}; $spoKvIssues = @{}
 $sharingLabel = @{ 'disabled' = 'Only people in the organization (external sharing off)'; 'existingExternalUserSharingOnly' = 'Existing guests only'; 'externalUserSharingOnly' = 'New and existing guests (sign-in required)'; 'externalUserAndGuestSharing' = 'Anyone (anonymous links allowed)' }
@@ -2670,7 +2799,7 @@ function Add-ShareRow {
 $script:shareRows = @()
 if ($SkipShareScan) { $shareScanNote = 'Share scan skipped (-SkipShareScan).' }
 else {
-    Write-Host "Scanning sharing and access across sites, OneDrive, Teams and guests..." -ForegroundColor Cyan
+    Write-Step "Scanning sharing and access across sites, OneDrive, Teams and guests..."
     $MaxSites = 80; $MaxItemsPerDrive = 1500; $MaxPermissionLookups = 600; $permLookups = 0
     $allSites = @(Get-GraphAllSafe 'v1.0/sites?search=*&$select=id,displayName,webUrl,createdDateTime' 'SharePoint sites' -MaxItems 400 | Where-Object { $_.webUrl -notmatch '/portals/|/sites/appcatalog|-my\.sharepoint\.com/personal/|/search$|contentTypeHub' })
     if (Get-GraphFailure 'SharePoint sites') { $shareScanNote = "Sites could not be listed: $(Get-GraphFailure 'SharePoint sites')" }
@@ -3325,7 +3454,7 @@ $remediationCounts = Join-List (@('Critical', 'High', 'Medium', 'Low') | ForEach
 # ----------------------------------------------------------------------------------------------
 # Build HTML
 # ----------------------------------------------------------------------------------------------
-Write-Host "Building report..." -ForegroundColor Cyan
+Write-Step "Building report..."
 $css = @"
 :root{--blue:#005D9C;--ink:#000;--line:#d9d9d9;--nav:#f3f6f9;--good:#1e7b34;--warn:#b00020}
 *{box-sizing:border-box}body{margin:0;font-family:Arial,Helvetica,sans-serif;font-size:11pt;color:var(--ink);line-height:1.35}
@@ -3444,6 +3573,13 @@ details.ap-goal>summary{list-style:none;cursor:pointer;display:grid;grid-templat
 details.ap-goal>summary::-webkit-details-marker{display:none}details.ap-goal>summary::marker{content:''}
 details.ap-goal>summary:hover{background:rgba(0,0,0,.035)}details.ap-goal>summary:focus-visible{outline:2px solid var(--blue);outline-offset:-2px}
 details.ap-goal[open] .gl-chev::before{content:'\25BE'}details.ap-goal .gl-count .ap-bar{margin-left:auto}
+.ap-late{color:var(--warn);font-weight:bold}.ap-flag.slip{color:#8a1020;background:#fff5f5;border-color:#f0c8cf;border-left-color:var(--warn)}
+.ap-months{list-style:none;display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:6px;margin:10px 0 6px;padding:0}
+.ap-mo{min-width:0;border-top:6px solid var(--line);font-size:9pt}.ap-mo.done{border-top-color:var(--good)}.ap-mo.slip{border-top-color:var(--warn)}.ap-mo.none{color:#777;padding:4px 6px}
+.ap-mo details.ap-step{margin:0;border-top:0;border-radius:0 0 6px 6px}.ap-mo details.ap-step>summary{padding:4px 6px}.ap-mo .ap-sub{display:block}
+.ap-mo ul{margin:0;padding:2px 6px 6px 18px}.ap-mo .ap-flag{margin:4px 6px}
+@media (max-width:1100px){.ap-months{grid-template-columns:repeat(4,minmax(0,1fr))}}
+@media (max-width:600px){.ap-months{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:1100px){.ap-line{grid-template-columns:1fr;gap:0}.ap-ms{padding:0 0 14px 34px;border-left:4px solid var(--line);margin-left:9px}.ap-ms::before{display:none}.ap-dot{left:-13px;top:0}details.ap-goal>summary{grid-template-columns:150px 1fr}details.ap-goal .gl-name{grid-column:2}details.ap-goal .gl-count{text-align:left}details.ap-goal .gl-chev{display:none}}
 @media print{.ap-line{gap:0 8px}details.ap-goal>summary{grid-template-columns:120px 1fr 160px 110px}details.ap-goal .gl-chev{display:none}}
 @media print{nav,.pager{display:none}body.paged main>section{display:block}.ticketbar,button.tk,button.more,.modal{display:none}.permfull{display:block!important}main{margin:0;padding:0}section{page-break-before:always}section:first-of-type{page-break-before:avoid}table.grid thead th{position:static}.filters{display:none}details.info .tip{position:static;display:block;width:auto;box-shadow:none;margin-top:4px}details.info summary{display:none}details.info:not([open]) .tip{display:none}}
@@ -3643,7 +3779,10 @@ $historyName = ($ClientLabel -replace '[^A-Za-z0-9 ._()-]', '').Trim(); if (-not
 $historyPath = Join-Path $OutputFolder "$historyName - history.json"
 $history = @()
 if (-not $NoHistory -and (Test-Path $historyPath)) {
-    try { $history = @(Get-Content $historyPath -Raw -ErrorAction Stop | ConvertFrom-Json) } catch { Write-Warning "Could not read the history file $historyPath : $($_.Exception.Message)" }
+    # Windows PowerShell 5.1 returns a JSON array as one object, and earlier 5.1 runs could save the history nested
+    # one level deeper; flattening gives one entry per run in both engines.
+    function Expand-HistoryEntry { param($x) foreach ($e in @($x)) { if ($e -is [array]) { Expand-HistoryEntry $e } elseif ($null -ne $e) { $e } } }
+    try { $history = @(Expand-HistoryEntry (Get-Content $historyPath -Raw -ErrorAction Stop | ConvertFrom-Json)) } catch { Write-Warning "Could not read the history file $historyPath : $($_.Exception.Message)" }
 }
 $controlMap = [ordered]@{}; foreach ($row in $script:summaryRows) { $controlMap[[string]$row.Control] = [string]$row.Status }
 $snapshot = [ordered]@{
@@ -4347,9 +4486,12 @@ $($glanceRowsHtml.ToString())
 # ----------------------------------------------------------------------------------------------
 # Executive Action Plan: each At a Glance area becomes a business goal the board can hold
 # management to, with a target date and the technical goals (section 3 controls and AH- findings)
-# that achieve it. The timeline projects controls in place and Secure Score at each milestone if
-# the remediation plan is followed on schedule. A finding not tied to a goal goes under
-# "Every other finding". A new goal needs an area key from $GlanceAreas.
+# that achieve it. Due dates are fixed from the first report that listed a finding (Critical 7
+# days, High 30, Medium 90, Low 365), so a late item shows as overdue instead of moving out again
+# every month. The history file gives the last 12 months (what was closed and achieved, month by
+# month); the forward timeline projects controls in place and Secure Score at each milestone if
+# findings are fixed by their due dates. A finding not tied to a goal goes under "Every other
+# finding". A new goal needs an area key from $GlanceAreas.
 # ----------------------------------------------------------------------------------------------
 $PlanGoals = @(
     @{ Key = 'threats'; Goal = 'We would know about an intrusion and could investigate it'; DoneWhen = 'Activity is recorded and every warning sign in the intrusion check has been explained.'; Extra = '^Usage report names are concealed$' },
@@ -4361,6 +4503,7 @@ $PlanGoals = @(
     @{ Key = 'mde'; Goal = 'Every computer is watched for attacks such as ransomware'; DoneWhen = 'Every active Windows and Mac computer reports to Defender for Endpoint.'; Extra = '' },
     @{ Key = 'score'; Goal = "Microsoft Secure Score reaches $TargetScorePercent%"; DoneWhen = "Secure Score is at or above $TargetScorePercent% of the points available, the target set for this report."; Extra = '' }
 )
+$apToday = $ReportDate.Date
 $apMilestones = @(
     @{ Idx = 0; Label = 'Today';            Date = $ReportDate },
     @{ Idx = 1; Label = 'This week';        Date = $ReportDate.AddDays(7) },
@@ -4368,25 +4511,67 @@ $apMilestones = @(
     @{ Idx = 3; Label = 'Within 90 days';   Date = $ReportDate.AddDays(90) },
     @{ Idx = 4; Label = 'Within 12 months'; Date = $ReportDate.AddDays(365) }
 )
-$apPhaseIdx = @{}; for ($i = 0; $i -lt $PhaseOrder.Count; $i++) { $apPhaseIdx[$PhaseOrder[$i]] = $i + 1 }
-function Get-ApDue { param($Idx) if ($null -eq $Idx) { return 'No date set: agree one at the next IT committee' } $m = $apMilestones[[int]$Idx]; return "$($m.Label) (by $($m.Date.ToString('MMM d, yyyy')))" }
+$apPrioDays = @{ Critical = 7; High = 30; Medium = 90; Low = 365 }
+function Get-ApBucket { param([datetime]$Due) $d = ($Due.Date - $apToday).TotalDays; if ($d -le 7) { return 1 } elseif ($d -le 30) { return 2 } elseif ($d -le 90) { return 3 } else { return 4 } }
+function Get-ApSnapDate { param($Snap)
+    $v = Get-JsonProp $Snap 'Date'; if ($v -is [datetime]) { return $v }
+    try { return [datetime]::ParseExact([string]$v, 'yyyy-MM-dd HH:mm', [Globalization.CultureInfo]::InvariantCulture) } catch { return $null }
+}
+function Format-ApDate { param($d) if ($null -eq $d) { return '' } return ([datetime]$d).ToString('MMM d, yyyy') }
+# Earlier runs, oldest first; the last history entry is this run.
+$apPast = @(@($history | Select-Object -First ([Math]::Max(0, @($history).Count - 1))) | Where-Object { $null -ne (Get-ApSnapDate $_) -and (Get-ApSnapDate $_) -lt $ReportDate })
+$apPastNames = @($apPast | ForEach-Object { , @(Get-JsonProp $_ 'FindingNames' | ForEach-Object { [string]$_ }) })
+# First report that listed each open finding (in an unbroken run of reports up to now) fixes its due date.
+$apFirstSeen = @{}; $apDueDate = @{}
+foreach ($f in $remediationSorted) {
+    $fn = [string]$f.Finding; if ($apFirstSeen.ContainsKey($fn)) { continue }
+    $first = $ReportDate
+    for ($j = $apPast.Count - 1; $j -ge 0; $j--) { if ($apPastNames[$j] -contains $fn) { $first = Get-ApSnapDate $apPast[$j] } else { break } }
+    $days = $apPrioDays[[string]$f.Priority]; if (-not $days) { $days = 90 }
+    $apFirstSeen[$fn] = $first; $apDueDate[$fn] = $first.Date.AddDays($days)
+}
+function Get-ApFindingBucket { param($f) return (Get-ApBucket $apDueDate[[string]$f.Finding]) }
+function Test-ApOverdue { param($f) return ($f -and $apDueDate.ContainsKey([string]$f.Finding) -and $apDueDate[[string]$f.Finding] -lt $apToday) }
+function Get-ApDueText { param($f, $Bucket)
+    if (-not $f) { if ($null -ne $Bucket) { $m = $apMilestones[[int]$Bucket]; return "$($m.Label) (by $(Format-ApDate $m.Date))" } return 'No date set: agree one at the next IT committee' }
+    $due = $apDueDate[[string]$f.Finding]; $first = $apFirstSeen[[string]$f.Finding]
+    $seen = if ($first.Date -lt $apToday) { "first reported $(Format-ApDate $first)" } else { 'first reported today' }
+    if ($due -lt $apToday) { return "Overdue by $([int]($apToday - $due).TotalDays) days (due $(Format-ApDate $due); $seen)" }
+    return "Due $(Format-ApDate $due) ($seen)"
+}
 # Findings to goals: a control's own finding goes to the control's area, then the Extra patterns, then Secure Score actions.
 $apCtlKey = @{}; foreach ($a in $glAreaList) { foreach ($c in @($a.Controls)) { $apCtlKey[[string]$c] = $a.Key } }
-$apTasks = @{}; foreach ($k in @(@($PlanGoals | ForEach-Object { $_.Key }) + 'other')) { $apTasks[$k] = New-Object System.Collections.Generic.List[object] }
-foreach ($f in $remediationSorted) {
-    $fn = [string]$f.Finding; $k = $null
-    if ($apCtlKey.ContainsKey($fn) -and $apTasks.ContainsKey($apCtlKey[$fn])) { $k = $apCtlKey[$fn] }
-    if (-not $k) { foreach ($g in $PlanGoals) { if ($g.Extra -and $fn -match $g.Extra) { $k = $g.Key; break } } }
-    if (-not $k -and [string]$f.Section -eq 'Secure Score') { $k = 'score' }
-    if (-not $k) { $k = 'other' }
-    $apTasks[$k].Add($f)
+function Get-ApGoalKey { param([string]$Name, [string]$Section)
+    if ($apCtlKey.ContainsKey($Name) -and ($PlanGoals | Where-Object { $_.Key -eq $apCtlKey[$Name] })) { return $apCtlKey[$Name] }
+    foreach ($g in $PlanGoals) { if ($g.Extra -and $Name -match $g.Extra) { return $g.Key } }
+    if ($Section -eq 'Secure Score') { return 'score' }
+    return 'other'
 }
+$apTasks = @{}; foreach ($k in @(@($PlanGoals | ForEach-Object { $_.Key }) + 'other')) { $apTasks[$k] = New-Object System.Collections.Generic.List[object] }
+foreach ($f in $remediationSorted) { $apTasks[(Get-ApGoalKey ([string]$f.Finding) ([string]$f.Section))].Add($f) }
 $apGoalList = New-Object System.Collections.Generic.List[object]
 foreach ($g in $PlanGoals) { $apGoalList.Add($g) }
 if ($apTasks['other'].Count -or $glOther.Count) { $apGoalList.Add(@{ Key = 'other'; Goal = 'Every other finding is closed or formally accepted'; DoneWhen = 'Each remaining item in the remediation plan is fixed, or the IT committee records why the risk is accepted.'; Extra = '' }) }
+# Whether a goal was met in an earlier run: every rated control of its area in place, none of its extra findings open,
+# and for Secure Score the score at or above that run's target. $null when that run could not tell.
+function Test-ApGoalMet { param($Snap, $Goal)
+    if ($Goal.Key -eq 'score') { $p = Get-JsonProp $Snap 'SecureScorePct'; $t = Get-JsonProp $Snap 'TargetPct'; if ($null -eq $p -or $null -eq $t) { return $null }; return ([double]$p -ge [double]$t) }
+    if ($Goal.Key -eq 'other') { return $null }
+    $area = $glAreaList | Where-Object { $_.Key -eq $Goal.Key } | Select-Object -First 1; if (-not $area) { return $null }
+    $ctl = Get-JsonProp $Snap 'Controls'; $rated = 0
+    foreach ($c in @($area.Controls)) { $st = [string](Get-JsonProp $ctl $c); if (-not $st) { continue }; $k = Get-StatusKind $st; if ($k -in @('warn', 'mid')) { return $false }; if ($k -eq 'good') { $rated++ } }
+    if ($Goal.Extra) { foreach ($n in @(Get-JsonProp $Snap 'FindingNames')) { if ([string]$n -match $Goal.Extra) { return $false } } }
+    if (-not $rated) { return $null }
+    return $true
+}
+function Get-ApSnapControls { param($Snap)
+    $ctl = Get-JsonProp $Snap 'Controls'; $good = 0; $rated = 0
+    if ($ctl) { foreach ($pr in $ctl.PSObject.Properties) { $k = Get-StatusKind ([string]$pr.Value); if ($k -in @('good', 'warn', 'mid')) { $rated++; if ($k -eq 'good') { $good++ } } } }
+    return @{ Good = $good; Rated = $rated }
+}
 # Secure Score projection: points from the Secure Score actions due by each milestone.
 $apScorePts = @{}; foreach ($i in 0..4) { $apScorePts[$i] = 0.0 }
-foreach ($f in $remediationSorted) { if ($f.Points) { $pi = $apPhaseIdx[[string]$f.Phase]; if ($pi) { foreach ($i in $pi..4) { $apScorePts[$i] += [double]$f.Points } } } }
+foreach ($f in $remediationSorted) { if ($f.Points) { $bi = Get-ApFindingBucket $f; foreach ($i in $bi..4) { $apScorePts[$i] += [double]$f.Points } } }
 $apScoreReach = $null
 if ($null -ne $scoreCurrent -and $scoreTarget) { foreach ($i in 0..4) { if (([double]$scoreCurrent + $apScorePts[$i]) -ge [double]$scoreTarget) { $apScoreReach = $i; break } } }
 # Technical goals per business goal: the area's measured controls, plus findings that are not one of those controls.
@@ -4397,29 +4582,48 @@ foreach ($g in $apGoalList) {
     $ctlNames = @(); if ($area) { $ctlNames = @($area.Controls) }
     foreach ($c in $ctlNames) {
         $it = $glItems[[string]$c]; if (-not $it -or $it.Kind -notin @('good', 'warn', 'mid')) { continue }
-        $due = $null
+        $bucket = $null; $ctlSince = $null
         if ($it.Kind -ne 'good') {
-            if ($it.Control -eq 'Microsoft Secure Score') { $due = $apScoreReach }
-            elseif ($it.Finding) { $due = $apPhaseIdx[[string]$it.Finding.Phase] }
+            if ($it.Control -eq 'Microsoft Secure Score') { $bucket = $apScoreReach }
+            elseif ($it.Finding) { $bucket = Get-ApFindingBucket $it.Finding }
+        } elseif ($apPast.Count) {
+            # in place since: the earliest run in the unbroken streak of in-place results up to now
+            $ctlSince = $ReportDate
+            for ($j = $apPast.Count - 1; $j -ge 0; $j--) { if ((Get-StatusKind ([string](Get-JsonProp (Get-JsonProp $apPast[$j] 'Controls') $c))) -eq 'good') { $ctlSince = Get-ApSnapDate $apPast[$j] } else { break } }
         }
-        $tech.Add([pscustomobject]@{ Name = $it.Control; Kind = $it.Kind; Status = $it.Status; Done = ($it.Kind -eq 'good'); Due = $due; Finding = $it.Finding })
+        $tech.Add([pscustomobject]@{ Name = $it.Control; Kind = $it.Kind; Status = $it.Status; Done = ($it.Kind -eq 'good'); Bucket = $bucket; Finding = $it.Finding; Since = $ctlSince })
     }
     foreach ($f in $apTasks[$g.Key]) {
         if ($ctlNames -contains [string]$f.Finding) { continue }
-        $tech.Add([pscustomobject]@{ Name = [string]$f.Finding; Kind = 'warn'; Status = (Get-GlanceShortText ([string]$f.State) 140); Done = $false; Due = $apPhaseIdx[[string]$f.Phase]; Finding = $f })
+        $tech.Add([pscustomobject]@{ Name = [string]$f.Finding; Kind = 'warn'; Status = (Get-GlanceShortText ([string]$f.State) 140); Done = $false; Bucket = (Get-ApFindingBucket $f); Finding = $f; Since = $null })
     }
     $open = @($tech | Where-Object { -not $_.Done })
-    $dated = @($open | Where-Object { $null -ne $_.Due } | ForEach-Object { [int]$_.Due })
-    $target = if (-not $tech.Count) { $null } elseif (-not $open.Count) { 0 } elseif ($dated.Count -eq $open.Count) { ($dated | Measure-Object -Maximum).Maximum } else { $null }
-    if ($g.Key -eq 'score' -and $null -ne $scoreCurrent) { $target = $apScoreReach }
+    $overdue = @($open | Where-Object { Test-ApOverdue $_.Finding })
+    $dated = @($open | Where-Object { $null -ne $_.Bucket })
+    $target = if (-not $tech.Count) { $null } elseif (-not $open.Count) { 0 } elseif ($dated.Count -eq $open.Count) { ($dated | ForEach-Object { [int]$_.Bucket } | Measure-Object -Maximum).Maximum } else { $null }
+    $targetDate = $null
+    $fDates = @($open | Where-Object { $_.Finding } | ForEach-Object { $apDueDate[[string]$_.Finding.Finding] })
+    if ($null -ne $target -and $target -gt 0) { $targetDate = if ($fDates.Count -eq $open.Count) { ($fDates | Sort-Object | Select-Object -Last 1) } else { $apMilestones[[int]$target].Date } }
+    if ($g.Key -eq 'score' -and $null -ne $scoreCurrent) { $target = $apScoreReach; $targetDate = if ($null -ne $apScoreReach) { $apMilestones[[int]$apScoreReach].Date } else { $null } }
     $nDone = @($tech | Where-Object { $_.Done }).Count; $nMid = @($tech | Where-Object { $_.Kind -eq 'mid' }).Count
     $state = if (-not $tech.Count) { 'na' } elseif (-not $open.Count) { 'good' } elseif ($nDone -or $nMid) { 'mid' } else { 'warn' }
     $word = @{ na = 'Not measured'; good = 'Achieved'; mid = 'In progress'; warn = 'Not started' }[$state]
     $up = @($tech | Where-Object { $glChange.ContainsKey($_.Name) -and $glChange[$_.Name]['Direction'] -eq 'Improved' }).Count
     $down = @($tech | Where-Object { $glChange.ContainsKey($_.Name) -and $glChange[$_.Name]['Direction'] -eq 'Regressed' }).Count
     $trendTxt = if (-not $previous) { 'First report' } elseif ($up -or $down) { ((@($(if ($up) { "$up better" }), $(if ($down) { "$down worse" })) | Where-Object { $_ }) -join ', ') + ' since last report' } else { 'No change since last report' }
+    # Achieved since / slipped back, from the earlier runs
+    $metSince = $null; $slipNote = ''
+    if ($apPast.Count -and $g.Key -ne 'other') {
+        if ($state -eq 'good') {
+            $metSince = $ReportDate
+            for ($j = $apPast.Count - 1; $j -ge 0; $j--) { if ((Test-ApGoalMet $apPast[$j] $g) -eq $true) { $metSince = Get-ApSnapDate $apPast[$j] } else { break } }
+        } else {
+            $lastMet = $null; for ($j = $apPast.Count - 1; $j -ge 0; $j--) { if ((Test-ApGoalMet $apPast[$j] $g) -eq $true) { $lastMet = $j; break } }
+            if ($null -ne $lastMet) { $slipDate = if ($lastMet + 1 -lt $apPast.Count) { Get-ApSnapDate $apPast[$lastMet + 1] } else { $ReportDate }; $slipNote = "Was achieved in the report of $(Format-ApDate (Get-ApSnapDate $apPast[$lastMet])); slipped back by $(Format-ApDate $slipDate)." }
+        }
+    }
     $owners = @($apTasks[$g.Key] | Where-Object { $_.Playbook } | ForEach-Object { [string]$_.Playbook.Owner } | Select-Object -Unique)
-    $apGoalData[$g.Key] = [pscustomobject]@{ Goal = $g; Area = $area; Tech = $tech; Open = $open; Done = $nDone; Mid = $nMid; Target = $target; State = $state; Word = $word; Trend = $trendTxt; Owners = $owners }
+    $apGoalData[$g.Key] = [pscustomobject]@{ Goal = $g; Area = $area; Tech = $tech; Open = $open; Overdue = $overdue; Done = $nDone; Mid = $nMid; Target = $target; TargetDate = $targetDate; State = $state; Word = $word; Trend = $trendTxt; Owners = $owners; MetSince = $metSince; Slip = $slipNote }
 }
 # Controls in place at each milestone if every finding is closed by its due date.
 $apRated = @($glItems.Values | Where-Object { $_.Kind -in @('good', 'warn', 'mid') })
@@ -4430,10 +4634,11 @@ foreach ($i in 0..4) {
         if ($it.Kind -eq 'good') { $n++; continue }
         if ($i -eq 0) { continue }
         if ($it.Control -eq 'Microsoft Secure Score') { if ($null -ne $apScoreReach -and $apScoreReach -le $i) { $n++ }; continue }
-        if ($it.Finding -and $apPhaseIdx[[string]$it.Finding.Phase] -le $i) { $n++ }
+        if ($it.Finding -and (Get-ApFindingBucket $it.Finding) -le $i) { $n++ }
     }
     $apProj[$i] = $n
 }
+$apOverdueAll = @($remediationSorted | Where-Object { Test-ApOverdue $_ })
 function Get-ApBar { param([int]$Now, [int]$Then, [int]$Total)
     if ($Total -le 0) { return "<div class='ap-bar'></div>" }
     $a = [math]::Round(100 * $Now / $Total, 1); $b = [math]::Round(100 * [math]::Max(0, $Then - $Now) / $Total, 1)
@@ -4441,16 +4646,77 @@ function Get-ApBar { param([int]$Now, [int]$Then, [int]$Total)
 }
 function Get-ApTaskLi { param($f)
     $how = if ($f.Playbook) { "$(HtmlEnc $f.Playbook.Owner) &middot; $(HtmlEnc $f.Playbook.Effort)" } elseif ($f.Points) { "Secure Score action, $($f.Points) points" } else { '' }
-    return "<li><span class='gl-prio $($f.Priority)'>$(HtmlEnc $f.Priority)</span><a href='#rem-$($f.Ref)'>$(HtmlEnc $f.Finding)</a> <span class='muted'>$(HtmlEnc $f.Ref)</span>$(if ($how) { "<div class='gl-ev'>$how</div>" })</li>"
+    $late = if (Test-ApOverdue $f) { "<span class='ap-late'>Overdue since $(Format-ApDate $apDueDate[[string]$f.Finding])</span>" } else { "<span class='muted'>due $(Format-ApDate $apDueDate[[string]$f.Finding])</span>" }
+    return "<li><span class='gl-prio $($f.Priority)'>$(HtmlEnc $f.Priority)</span><a href='#rem-$($f.Ref)'>$(HtmlEnc $f.Finding)</a> <span class='muted'>$(HtmlEnc $f.Ref)</span> $late$(if ($how) { "<div class='gl-ev'>$how</div>" })</li>"
 }
+
+# ---- Last 12 months, from the history file ----
+$apWinStart = $ReportDate.AddDays(-365)
+$apWin = @(); for ($j = 0; $j -lt $apPast.Count; $j++) { if ((Get-ApSnapDate $apPast[$j]) -ge $apWinStart) { $apWin += $j } }
+$apClosed = New-Object System.Collections.Generic.List[object]   # Name, Date, PastIndex (-1 = this report)
+$apNewCount = 0
+$allNames = @($apPastNames) + , @($remediationSorted | ForEach-Object { [string]$_.Finding })
+for ($j = 1; $j -le $apPast.Count; $j++) {
+    $d = if ($j -lt $apPast.Count) { Get-ApSnapDate $apPast[$j] } else { $ReportDate }
+    if ($d -lt $apWinStart) { continue }
+    foreach ($n in @($allNames[$j - 1])) { if ($n -and $allNames[$j] -notcontains $n) { $apClosed.Add([pscustomobject]@{ Name = $n; Date = $d; Idx = $(if ($j -lt $apPast.Count) { $j } else { -1 }) }) } }
+    foreach ($n in @($allNames[$j])) { if ($n -and $allNames[$j - 1] -notcontains $n) { $apNewCount++ } }
+}
+$apMonthHtml = New-Object System.Text.StringBuilder
+$apLookHtml = ''
+if ($apWin.Count) {
+    $base = $apPast[$apWin[0]]; $baseDate = Get-ApSnapDate $base; $baseCtl = Get-ApSnapControls $base
+    $nowGood = @($apRated | Where-Object { $_.Kind -eq 'good' }).Count
+    $basePct = Get-JsonProp $base 'SecureScorePct'
+    $reachedIn = @($apGoalList | Where-Object { $d = $apGoalData[$_.Key]; $d.State -eq 'good' -and $d.MetSince -and $d.MetSince -gt $baseDate })
+    $slipped = @($apGoalList | Where-Object { $apGoalData[$_.Key].Slip })
+    $tiles = "<div class='kpi good'><div class='v'>$($apClosed.Count)</div><div class='l'>findings closed since $(Format-ApDate $baseDate)</div></div>"
+    $tiles += "<div class='kpi $(if ($reachedIn.Count) { 'good' } else { 'mid' })'><div class='v'>$($reachedIn.Count)</div><div class='l'>goals reached$(if ($slipped.Count) { "; $($slipped.Count) slipped back" })</div></div>"
+    $tiles += "<div class='kpi'><div class='v'>$($baseCtl.Good) &rarr; $nowGood</div><div class='l'>controls in place (of $($apRated.Count))</div></div>"
+    if ($null -ne $basePct -and $null -ne $scorePct) { $tiles += "<div class='kpi $(if ([double]$scorePct -gt [double]$basePct) { 'good' } elseif ([double]$scorePct -lt [double]$basePct) { 'bad' } else { '' })'><div class='v'>$basePct% &rarr; $scorePct%</div><div class='l'>Microsoft Secure Score</div></div>" }
+    $tiles += "<div class='kpi $(if ($apOverdueAll.Count) { 'bad' } else { 'good' })'><div class='v'>$($apOverdueAll.Count)</div><div class='l'>findings overdue today</div></div>"
+    # one cell per calendar month, oldest first; the report month is "Today" on the timeline below
+    $m0 = (Get-Date -Year $ReportDate.Year -Month $ReportDate.Month -Day 1).Date
+    [void]$apMonthHtml.Append("<ol class='ap-months'>")
+    for ($k = 12; $k -ge 1; $k--) {
+        $ms = $m0.AddMonths(-$k); $me = $ms.AddMonths(1)
+        $idx = @($apWin | Where-Object { $sd = Get-ApSnapDate $apPast[$_]; $sd -ge $ms -and $sd -lt $me })
+        $label = $ms.ToString('MMM yyyy')
+        if (-not $idx.Count) { [void]$apMonthHtml.Append("<li class='ap-mo none'><b>$label</b><span class='ap-sub'>No report</span></li>"); continue }
+        $last = $apPast[$idx[-1]]; $ctl = Get-ApSnapControls $last; $pct = Get-JsonProp $last 'SecureScorePct'
+        $closedHere = @($apClosed | Where-Object { $_.Idx -in $idx })
+        $prevIdx = $idx[0] - 1
+        $goalsHere = @(); $slipHere = @()
+        if ($prevIdx -ge 0) {
+            foreach ($g in $apGoalList) {
+                $was = Test-ApGoalMet $apPast[$prevIdx] $g; $is = Test-ApGoalMet $last $g
+                $gShort = if ($apGoalData[$g.Key].Area) { $apGoalData[$g.Key].Area.Name } else { $g.Goal }
+                if ($is -eq $true -and $was -ne $true) { $goalsHere += $gShort } elseif ($was -eq $true -and $is -eq $false) { $slipHere += $gShort }
+            }
+        }
+        $cls = if ($slipHere.Count) { 'slip' } elseif ($goalsHere.Count -or $closedHere.Count) { 'done' } else { '' }
+        $body = ''
+        foreach ($t in $goalsHere) { $body += "<span class='ap-flag'>&#9873; $(HtmlEnc $t)</span>" }
+        foreach ($t in $slipHere) { $body += "<span class='ap-flag slip'>&#9888; Slipped: $(HtmlEnc $t)</span>" }
+        if ($closedHere.Count) { $body += "<ul>$((@($closedHere | ForEach-Object { "<li>&#10004; $(HtmlEnc $_.Name)</li>" })) -join '')</ul>" }
+        if (-not $body) { $body = "<p class='ap-sub'>Nothing closed this month.</p>" }
+        [void]$apMonthHtml.Append("<li class='ap-mo $cls'><details class='ap-step'><summary><b>$label</b><span class='ap-sub'>$($ctl.Good) of $($ctl.Rated) in place$(if ($null -ne $pct) { "; score $pct%" })</span>$(Get-ApBar $ctl.Good $ctl.Good $ctl.Rated)<span class='ap-sub'>$(if ($closedHere.Count) { "&#10004; $($closedHere.Count) closed" } else { 'No findings closed' })$(if ($goalsHere.Count) { " &middot; &#9873; $($goalsHere.Count) goal$(if ($goalsHere.Count -ne 1) { 's' })" })$(if ($slipHere.Count) { " &middot; &#9888; $($slipHere.Count) slipped" })</span></summary>$body</details></li>")
+    }
+    [void]$apMonthHtml.Append('</ol>')
+    $apLookHtml = "<h3>Last 12 months: what was achieved</h3><div class='kpis'>$tiles</div>$($apMonthHtml.ToString())<p class='meta'>From the history file: $($apWin.Count) earlier report$(if ($apWin.Count -ne 1) { 's' }) since $(Format-ApDate $baseDate). A finding counts as closed in the month of the first report that no longer lists it. Click a month for the findings closed and goals reached.</p>"
+} else {
+    $apLookHtml = "<h3>Last 12 months: what was achieved</h3><p class='note'>$(if ($apPast.Count) { 'No earlier report in the last 12 months.' } else { 'This is the first report for this organization.' }) From the next monthly report, this part shows month by month what was closed and which goals were reached, and the due dates below stay fixed so a late item shows as overdue. Run the script each month into the same output folder, without -NoHistory, so the history file builds up.</p>"
+}
+
+# ---- Forward timeline ----
 $apTotal = $apRated.Count
 $apLineHtml = New-Object System.Text.StringBuilder
 [void]$apLineHtml.Append("<ol class='ap-line'>")
 foreach ($m in $apMilestones) {
     $i = $m.Idx
-    $reached = @($apGoalList | Where-Object { $d = $apGoalData[$_.Key]; $null -ne $d.Target -and $d.Target -eq $i -and $d.Tech.Count })
+    $reached = @($apGoalList | Where-Object { $d = $apGoalData[$_.Key]; $null -ne $d.Target -and $d.Target -eq $i -and $d.Tech.Count -and $d.State -ne 'good' })
     $cls = if ($i -eq 0) { 'now' } elseif ($reached.Count) { 'reach' } else { '' }
-    [void]$apLineHtml.Append("<li class='ap-ms $cls'><span class='ap-dot' aria-hidden='true'></span><div class='ap-when'><b>$(HtmlEnc $m.Label)</b><span>$(if ($i -eq 0) { 'Where we are, ' } else { 'by ' })$($m.Date.ToString('MMM d, yyyy'))</span></div>")
+    [void]$apLineHtml.Append("<li class='ap-ms $cls'><span class='ap-dot' aria-hidden='true'></span><div class='ap-when'><b>$(HtmlEnc $m.Label)</b><span>$(if ($i -eq 0) { 'Where we are, ' } else { 'by ' })$(Format-ApDate $m.Date)</span></div>")
     $pct = if ($apTotal) { [math]::Round(100 * $apProj[$i] / $apTotal) } else { 0 }
     [void]$apLineHtml.Append("<div class='ap-num'><b>$($apProj[$i]) of $apTotal</b> controls in place ($pct%)</div>$(Get-ApBar $apProj[0] $apProj[$i] $apTotal)")
     if ($null -ne $scoreCurrent -and $scoreMax) {
@@ -4461,23 +4727,26 @@ foreach ($m in $apMilestones) {
         $already = @($apGoalList | Where-Object { $apGoalData[$_.Key].State -eq 'good' })
         if ($already.Count) { foreach ($g in $already) { [void]$apLineHtml.Append("<span class='ap-flag'>&#9873; Achieved: $(HtmlEnc $g.Goal)</span>") } }
         else { [void]$apLineHtml.Append("<p class='ap-sub'>No goal is fully achieved yet.</p>") }
+        if ($previous) { [void]$apLineHtml.Append("<p class='ap-sub'>Since the last report: $(@($apClosed | Where-Object { $_.Idx -eq -1 }).Count) finding(s) closed.</p>") }
         $openNow = @($remediationSorted).Count
-        [void]$apLineHtml.Append("<p class='ap-sub'>$openNow open finding$(if ($openNow -ne 1) { 's' }) in the remediation plan.</p></li>")
+        [void]$apLineHtml.Append("<p class='ap-sub'>$openNow open finding$(if ($openNow -ne 1) { 's' })$(if ($apOverdueAll.Count) { ", <span class='ap-late'>$($apOverdueAll.Count) overdue</span>" }).</p></li>")
         continue
     }
     foreach ($g in $reached) { [void]$apLineHtml.Append("<span class='ap-flag'>&#9873; Goal reached: $(HtmlEnc $g.Goal)</span>") }
-    $phase = $PhaseOrder[$i - 1]
     $steps = 0
     foreach ($g in $apGoalList) {
-        $fs = @($apTasks[$g.Key] | Where-Object { $_.Phase -eq $phase }); if (-not $fs.Count) { continue }
+        $fs = @($apTasks[$g.Key] | Where-Object { (Get-ApFindingBucket $_) -eq $i }); if (-not $fs.Count) { continue }
         $steps += $fs.Count
+        $late = @($fs | Where-Object { Test-ApOverdue $_ }).Count
         $short = if ($apGoalData[$g.Key].Area) { $apGoalData[$g.Key].Area.Name } else { 'Other findings' }
-        [void]$apLineHtml.Append("<details class='ap-step'><summary><b>$(HtmlEnc $short)</b> &middot; $($fs.Count) step$(if ($fs.Count -ne 1) { 's' })</summary><ol>$((@($fs | ForEach-Object { Get-ApTaskLi $_ })) -join '')</ol></details>")
+        [void]$apLineHtml.Append("<details class='ap-step'><summary><b>$(HtmlEnc $short)</b> &middot; $($fs.Count) step$(if ($fs.Count -ne 1) { 's' })$(if ($late) { " <span class='ap-late'>$late overdue</span>" })</summary><ol>$((@($fs | ForEach-Object { Get-ApTaskLi $_ })) -join '')</ol></details>")
     }
     if (-not $steps) { [void]$apLineHtml.Append("<p class='ap-sub'>Nothing scheduled.</p>") }
     [void]$apLineHtml.Append('</li>')
 }
 [void]$apLineHtml.Append('</ol>')
+
+# ---- Goals ----
 $apGoalsHtml = New-Object System.Text.StringBuilder
 foreach ($g in $apGoalList) {
     $d = $apGoalData[$g.Key]
@@ -4485,28 +4754,33 @@ foreach ($g in $apGoalList) {
     $prog = if ($g.Key -eq 'score' -and $null -ne $scoreCurrent -and $scoreTarget) { $sc = [int][math]::Min([double]$scoreCurrent, [double]$scoreTarget); "<b>$scoreCurrent of $scoreTarget</b>target points$(Get-ApBar $sc $sc ([int]$scoreTarget))" }
             elseif ($nT) { "<b>$($d.Done) of $nT</b>technical goals met$(Get-ApBar $d.Done $d.Done $nT)" }
             else { '<b>&mdash;</b>not measured' }
-    $tgt = if ($d.State -eq 'good') { '<b>Achieved</b>' } elseif ($d.State -eq 'na') { '<b>&mdash;</b>' }
-           elseif ($null -ne $d.Target) { "<b>$($apMilestones[[int]$d.Target].Date.ToString('MMM d, yyyy'))</b>$(HtmlEnc $apMilestones[[int]$d.Target].Label.ToLower())" }
+    $tgt = if ($d.State -eq 'good') { "<b>Achieved</b>$(if ($d.MetSince) { "since $(Format-ApDate $d.MetSince)" })" } elseif ($d.State -eq 'na') { '<b>&mdash;</b>' }
+           elseif ($null -ne $d.TargetDate) { "<b>$(Format-ApDate $d.TargetDate)</b>$(if ($d.Overdue.Count) { "<span class='ap-late'>$($d.Overdue.Count) overdue</span>" } else { 'on track' })" }
            elseif ($g.Key -eq 'score') { '<b>Not by this plan</b>the scheduled actions do not reach the target' }
            else { '<b>To be set</b>some steps have no date' }
-    $trs = foreach ($t in @($d.Tech | Sort-Object @{ Expression = { if ($_.Done) { 1 } else { 0 } } }, @{ Expression = { if ($null -ne $_.Due) { [int]$_.Due } else { 9 } } }, Name)) {
+    $trs = foreach ($t in @($d.Tech | Sort-Object @{ Expression = { if ($_.Done) { 1 } else { 0 } } }, @{ Expression = { if ($_.Finding -and $apDueDate.ContainsKey([string]$_.Finding.Finding)) { $apDueDate[[string]$_.Finding.Finding] } else { [datetime]::MaxValue } } }, Name)) {
         $how = if ($t.Done) { 'Nothing to do; checked again next month.' }
                elseif ($t.Finding) { "<span class='gl-prio $($t.Finding.Priority)'>$(HtmlEnc $t.Finding.Priority)</span><a href='#rem-$($t.Finding.Ref)'>Steps to fix ($($t.Finding.Ref))</a>$(if ($t.Finding.Playbook) { "<div class='gl-ev'>$(HtmlEnc $t.Finding.Playbook.Owner) &middot; $(HtmlEnc $t.Finding.Playbook.Effort)</div>" })" }
                elseif ($t.Name -eq 'Microsoft Secure Score') { "Close the Secure Score actions in <a href='#remediation'>section 4</a>." }
                else { 'No finding raised; review the evidence in section 3.' }
-        "<tr><td><span class='st $($t.Kind)'>$($GlanceIcon[$t.Kind])</span><b>$(HtmlEnc $t.Name)</b></td><td class='$($t.Kind)'>$(HtmlEnc $t.Status)</td><td>$(if ($t.Done) { 'Done' } else { HtmlEnc (Get-ApDue $t.Due) })</td><td>$how</td></tr>"
+        $dueCell = if ($t.Done) { if ($t.Since) { "Done (in place since $(Format-ApDate $t.Since))" } else { 'Done' } }
+                   elseif (Test-ApOverdue $t.Finding) { "<span class='ap-late'>$(HtmlEnc (Get-ApDueText $t.Finding $t.Bucket))</span>" }
+                   else { HtmlEnc (Get-ApDueText $t.Finding $t.Bucket) }
+        "<tr><td><span class='st $($t.Kind)'>$($GlanceIcon[$t.Kind])</span><b>$(HtmlEnc $t.Name)</b></td><td class='$($t.Kind)'>$(HtmlEnc $t.Status)</td><td>$dueCell</td><td>$how</td></tr>"
     }
-    $tbl = if ($trs) { "<table class='grid gl-tbl'><thead><tr><th style='width:30%'>Technical goal</th><th style='width:22%'>Now</th><th style='width:20%'>Due</th><th>How</th></tr></thead><tbody>$($trs -join '')</tbody></table>" } else { "<p class='muted'>Nothing could be measured for this goal in this run; section 3 says why.</p>" }
+    $tbl = if ($trs) { "<table class='grid gl-tbl'><thead><tr><th style='width:28%'>Technical goal</th><th style='width:20%'>Now</th><th style='width:24%'>Due</th><th>How</th></tr></thead><tbody>$($trs -join '')</tbody></table>" } else { "<p class='muted'>Nothing could be measured for this goal in this run; section 3 says why.</p>" }
     $who = if ($d.Owners.Count) { "<p class='why'><b>Who does the work:</b> $(HtmlEnc (Join-List $d.Owners '; '))</p>" } else { '' }
-    [void]$apGoalsHtml.Append("<details class='ap-goal $($d.State)' id='ap-$($g.Key)'><summary><span class='gl-pill $($d.State)'><span aria-hidden='true'>$($GlanceIcon[$d.State])</span>$($d.Word)</span><span class='gl-name'><b>$(HtmlEnc $g.Goal)</b><span class='hl'>Done when: $(HtmlEnc $g.DoneWhen)</span>$(if ($d.Area) { "<span class='nw'>Area on At a Glance: $(HtmlEnc $d.Area.Name)</span>" })</span><span class='gl-count'>$prog<small>$(HtmlEnc $d.Trend)</small></span><span class='gl-count'><small>Target</small>$tgt</span><span class='gl-chev' aria-hidden='true'></span></summary>")
+    [void]$apGoalsHtml.Append("<details class='ap-goal $($d.State)' id='ap-$($g.Key)'><summary><span class='gl-pill $($d.State)'><span aria-hidden='true'>$($GlanceIcon[$d.State])</span>$($d.Word)</span><span class='gl-name'><b>$(HtmlEnc $g.Goal)</b><span class='hl'>Done when: $(HtmlEnc $g.DoneWhen)</span>$(if ($d.Slip) { "<span class='nw ap-late'>$(HtmlEnc $d.Slip)</span>" })$(if ($d.Area) { "<span class='nw'>Area on At a Glance: $(HtmlEnc $d.Area.Name)</span>" })</span><span class='gl-count'>$prog<small>$(HtmlEnc $d.Trend)</small></span><span class='gl-count'><small>Target</small>$tgt</span><span class='gl-chev' aria-hidden='true'></span></summary>")
     [void]$apGoalsHtml.Append("<div class='gl-body'>$who$tbl</div></details>")
 }
 $apReached = @($apGoalList | Where-Object { $apGoalData[$_.Key].State -eq 'good' }).Count
 $apCounted = @($apGoalList | Where-Object { $apGoalData[$_.Key].Tech.Count }).Count
 $actionPlanHtml = @"
 <section id='actionplan'><h2>Executive Action Plan</h2>
-<p class='audience'>What the board can hold management to: $apCounted business goals, each with a plain test of when it is done, a target date and the technical goals that achieve it. $apReached of $apCounted $(if ($apReached -eq 1) { 'is' } else { 'are' }) achieved today. The timeline shows how many controls would be in place, and where Microsoft Secure Score would be, at each milestone if every finding is fixed by its due date (solid green: in place now; striped: added by the plan). Dates run from the report date: critical findings this week, high within 30 days, medium within 90 days, low within 12 months. The security officer reports progress against these goals each month, and the next report measures it.</p>
-<div class='gl-tools'><button type='button' id='apOpen'>Show every step</button><button type='button' id='apClose'>Hide them</button><span class='hint'>Click an area under a milestone to see its steps, or a goal below to see its technical goals. Each step links to its playbook in section 4 (<a href='#remediation'>Remediation Plan</a>).</span></div>
+<p class='audience'>What the board can hold management to: $apCounted business goals, each with a plain test of when it is done, a target date and the technical goals that achieve it. $apReached of $apCounted $(if ($apReached -eq 1) { 'is' } else { 'are' }) achieved today$(if ($apOverdueAll.Count) { ", and $($apOverdueAll.Count) finding$(if ($apOverdueAll.Count -ne 1) { 's are' } else { ' is' }) overdue" }). Each finding's due date is fixed from the first report that listed it (critical 7 days, high 30, medium 90, low 12 months) and does not move in later reports. The first part shows what was achieved in the last 12 months; the timeline shows how many controls would be in place, and where Microsoft Secure Score would be, at each milestone if every finding is fixed by its due date (solid green: in place now; striped: added by the plan). The security officer reports progress against these goals each month.</p>
+<div class='gl-tools'><button type='button' id='apOpen'>Show every step</button><button type='button' id='apClose'>Hide them</button><span class='hint'>Click a month, an area under a milestone, or a goal to see the detail. Each step links to its playbook in section 4 (<a href='#remediation'>Remediation Plan</a>).</span></div>
+$apLookHtml
+<h3>Next 12 months: the plan</h3>
 $($apLineHtml.ToString())
 <h3>Goals</h3>
 $($apGoalsHtml.ToString())
@@ -4847,6 +5121,7 @@ $shareSectionHtml
 
 $reportPath = Join-Path $OutputFolder "$safeClient - M365 Audit Evidence $($ReportDate.ToString('yyyy-MM-dd')).html"
 [System.IO.File]::WriteAllText($reportPath, $html, [System.Text.Encoding]::UTF8)
+Complete-Steps
 Write-Host "HTML report: $reportPath" -ForegroundColor Green
 if ($ticketRows.Count) {
     $ticketCsvPath = Join-Path $OutputFolder $ticketCsvName

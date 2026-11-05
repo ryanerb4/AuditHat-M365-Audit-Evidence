@@ -9,3 +9,7 @@ M365AuditEvidence.settings.json
 # Editor and OS noise
 .vscode/
 Thumbs.db
+# Local log cache (sign-ins and audit events) and history: tenant data
+cache/
+*.json.gz
+*history.json

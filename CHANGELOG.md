@@ -6,6 +6,21 @@ the report footer.
 
 ## 2026.11.04
 
+- Executive Action Plan looks back as well as forward: **Last 12 months** tiles (findings closed,
+  goals reached and slipped back, controls in place and Secure Score then and now, findings overdue)
+  and one cell per month from the history file. Due dates are fixed from the first report that listed
+  a finding (critical 7 days, high 30, medium 90, low 365), so late items show **Overdue by N days**
+  instead of moving out each month; goals show "Achieved since" or "slipped back" dates.
+- Progress while running: `[n/N]` step markers with run time and per-step duration, an overall
+  progress bar, and for long downloads records read, how far back in the window, percentage and time
+  left (also written to the run log every ten pages). The unified audit log search shows its progress.
+- Sign-in analysis downloads the sign-in log once and splits successes and failures locally, instead
+  of five filtered queries that Microsoft serves slowly (a run could appear stuck on "Analysing
+  sign-ins"). The record cap rose from 8,000 successful sign-ins to 100,000 sign-ins.
+- Local log cache for sign-ins and directory audit events (`<output>\cache\<tenant id>\`, compressed):
+  later runs download only new events plus a 24-hour overlap. `-NoCache` turns it off.
+- Fixed: Windows PowerShell 5.1 read the history file as a single entry, so the change log compared
+  against the wrong run and the file was saved nested; it is now read and repaired in both engines.
 - New second page, **Executive Action Plan**: business goals the board can hold management to
   (for example "A stolen password alone cannot open any account"), each with a Done when test,
   status, "N of M technical goals met" with a progress bar, movement since the last report and a
