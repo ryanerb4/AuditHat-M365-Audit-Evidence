@@ -8,6 +8,7 @@
 .DESCRIPTION
   Sections produced:
     At a Glance (first page: every control in eight areas, each coloured by its weakest control; click an area for its controls)
+    Executive Action Plan (business goals with a done-when test and target date, tied to the technical goals; milestone timeline)
     1. Executive Summary (narrative, KPI tiles, top priorities, progress since last report, tenant details)
     2. Review These Now: Possible Indications of Compromise (situation table: forwarding, hidden rules, abused apps, sharing, downloads, sign-ins)
     3. Security Controls Summary (one computed status per control)
@@ -3424,11 +3425,33 @@ details.gl>summary:hover{background:rgba(0,0,0,.035)}details.gl>summary:focus-vi
 .gl-prio{display:inline-block;border-radius:4px;padding:1px 7px;font-size:8.5pt;font-weight:bold;color:#fff;background:#777;margin-right:6px}.gl-prio.Critical,.gl-prio.High{background:var(--warn)}.gl-prio.Medium{background:#8a6508}
 @media (max-width:1100px){details.gl>summary{grid-template-columns:150px 1fr}.gl-name{grid-column:2}.gl-cells{grid-column:1}.gl-count{text-align:left}.gl-chev{display:none}}
 @media print{.gl-tools{display:none}.gl-chev{display:none}details.gl>summary{grid-template-columns:130px 1fr 150px 110px}}
+.ap-line{list-style:none;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:0 14px;margin:18px 0 14px;padding:0}
+.ap-ms{position:relative;padding:34px 0 0;min-width:0}
+.ap-ms::before{content:'';position:absolute;top:11px;left:-14px;right:0;height:4px;background:var(--line)}.ap-ms:first-child::before{left:12px}
+.ap-ms.reach::before,.ap-ms.now::before{background:var(--blue)}
+.ap-dot{position:absolute;top:2px;left:0;width:22px;height:22px;border-radius:50%;background:#fff;border:4px solid var(--blue)}
+.ap-ms.now .ap-dot{background:var(--blue)}.ap-ms.reach .ap-dot{border-color:var(--good);background:#fff}
+.ap-when b{display:block;font-size:12pt;color:var(--ink)}.ap-when span{display:block;font-size:9.5pt;color:#555;margin-bottom:6px}
+.ap-num{font-size:9.5pt;color:#333}.ap-num b{font-size:12pt;color:var(--ink)}.ap-sub{font-size:9pt;color:#444;margin:3px 0}
+.ap-bar{display:flex;height:10px;background:#e6e6e6;border-radius:5px;overflow:hidden;margin:4px 0 3px}.ap-bar i{display:block;height:100%}
+.ap-bar i.good{background:var(--good)}.ap-bar i.proj{background:repeating-linear-gradient(135deg,var(--good) 0 3px,#a8d5b3 3px 6px)}
+.ap-flag{display:block;font-size:9pt;font-weight:bold;color:#14551f;background:#f3faf4;border:1px solid #cfe8d5;border-left:4px solid var(--good);border-radius:4px;padding:3px 6px;margin:5px 0}
+details.ap-step{border:1px solid var(--line);border-radius:6px;margin:5px 0;background:#fff;font-size:9.5pt}
+details.ap-step>summary{cursor:pointer;padding:4px 8px}details.ap-step ol{margin:0;padding:2px 8px 6px 24px}details.ap-step li{margin:4px 0}
+details.ap-goal{border:1px solid var(--line);border-left:10px solid #9a9a9a;border-radius:8px;margin:0 0 8px;background:#f6f6f6;page-break-inside:avoid}
+details.ap-goal.warn{border-left-color:var(--warn);background:#fff5f5}details.ap-goal.mid{border-left-color:#B8860B;background:#fffaf0}details.ap-goal.good{border-left-color:var(--good);background:#f3faf4}
+details.ap-goal>summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:150px minmax(240px,1fr) 200px 130px 16px;gap:6px 16px;align-items:center;padding:10px 14px;border-radius:0 8px 8px 0}
+details.ap-goal>summary::-webkit-details-marker{display:none}details.ap-goal>summary::marker{content:''}
+details.ap-goal>summary:hover{background:rgba(0,0,0,.035)}details.ap-goal>summary:focus-visible{outline:2px solid var(--blue);outline-offset:-2px}
+details.ap-goal[open] .gl-chev::before{content:'\25BE'}details.ap-goal .gl-count .ap-bar{margin-left:auto}
+@media (max-width:1100px){.ap-line{grid-template-columns:1fr;gap:0}.ap-ms{padding:0 0 14px 34px;border-left:4px solid var(--line);margin-left:9px}.ap-ms::before{display:none}.ap-dot{left:-13px;top:0}details.ap-goal>summary{grid-template-columns:150px 1fr}details.ap-goal .gl-name{grid-column:2}details.ap-goal .gl-count{text-align:left}details.ap-goal .gl-chev{display:none}}
+@media print{.ap-line{gap:0 8px}details.ap-goal>summary{grid-template-columns:120px 1fr 160px 110px}details.ap-goal .gl-chev{display:none}}
 @media print{nav,.pager{display:none}body.paged main>section{display:block}.ticketbar,button.tk,button.more,.modal{display:none}.permfull{display:block!important}main{margin:0;padding:0}section{page-break-before:always}section:first-of-type{page-break-before:avoid}table.grid thead th{position:static}.filters{display:none}details.info .tip{position:static;display:block;width:auto;box-shadow:none;margin-top:4px}details.info summary{display:none}details.info:not([open]) .tip{display:none}}
 "@
 
 $sections = @(
     @{ Id = 'glance';       Title = 'At a Glance' },
+    @{ Id = 'actionplan';   Title = 'Executive Action Plan' },
     @{ Id = 'overview';     Title = '1. Executive Summary' },
     @{ Id = 'ioc';          Title = '2. Review These Now: Indications of Compromise' },
     @{ Id = 'summary';      Title = '3. Security Controls Summary' },
@@ -4317,10 +4340,179 @@ $glanceSectionHtml = @"
 <div class='gl-tools'><button type='button' id='glOpen'>Show every control</button><button type='button' id='glClose'>Hide them</button><span class='hint'>$(@($glItems.Keys).Count) controls in $($glAreaList.Count) areas. Section 3 (<a href='#summary'>Security Controls Summary</a>) has the full evidence; section 4 (<a href='#remediation'>Remediation Plan</a>) has the fixes in priority order.</span></div>
 $($glanceRowsHtml.ToString())
 <p class='legend'><span class='st good'>&#10004;</span> In place &nbsp; <span class='st mid'>&#9684;</span> Partly in place &nbsp; <span class='st warn'>&#10006;</span> Action needed &nbsp; <span class='st na'>&mdash;</span> Not measured (licence, permission or a skipped step) &nbsp; <span class='st info'>&bull;</span> For information. Section 3 uses the same marks with the words Pass, Partial and Action needed.</p>
-<p class='meta'>Next: the <a href='#overview'>Executive Summary</a> (verdict, headlines, top priorities, scorecard, progress and the plan).</p>
+<p class='meta'>Next: the <a href='#actionplan'>Executive Action Plan</a> (business goals, target dates and the milestone timeline), then the <a href='#overview'>Executive Summary</a>.</p>
 </section>
 "@
 
+# ----------------------------------------------------------------------------------------------
+# Executive Action Plan: each At a Glance area becomes a business goal the board can hold
+# management to, with a target date and the technical goals (section 3 controls and AH- findings)
+# that achieve it. The timeline projects controls in place and Secure Score at each milestone if
+# the remediation plan is followed on schedule. A finding not tied to a goal goes under
+# "Every other finding". A new goal needs an area key from $GlanceAreas.
+# ----------------------------------------------------------------------------------------------
+$PlanGoals = @(
+    @{ Key = 'threats'; Goal = 'We would know about an intrusion and could investigate it'; DoneWhen = 'Activity is recorded and every warning sign in the intrusion check has been explained.'; Extra = '^Usage report names are concealed$' },
+    @{ Key = 'signin'; Goal = 'A stolen password alone cannot open any account'; DoneWhen = 'Every user signs in with MFA, and old sign-in methods that skip MFA are blocked.'; Extra = '^Entra ID P1 is not licensed$' },
+    @{ Key = 'admins'; Goal = 'Administrator accounts are few and strongly protected'; DoneWhen = 'Two to four Global Administrators, each signing in with a passkey or security key.'; Extra = '^(Global Administrators without MFA registered|Too many Global Administrators|Single Global Administrator)$' },
+    @{ Key = 'email'; Goal = 'Nobody can send email as the institution, and phishing is filtered'; DoneWhen = 'SPF, DKIM and DMARC are enforced on every domain, email protection is on, and mail is not forwarded outside.'; Extra = '' },
+    @{ Key = 'sharing'; Goal = 'Customer data stays inside the institution'; DoneWhen = 'Nothing is open to anyone on the internet, guests are approved, and only administrators approve apps.'; Extra = '^Content open to ' },
+    @{ Key = 'intune'; Goal = 'Every computer and phone that opens bank data is managed'; DoneWhen = 'Devices are enrolled in Intune, each platform has a compliance policy, and only compliant devices can open bank data.'; Extra = '^Intune is not licensed$' },
+    @{ Key = 'mde'; Goal = 'Every computer is watched for attacks such as ransomware'; DoneWhen = 'Every active Windows and Mac computer reports to Defender for Endpoint.'; Extra = '' },
+    @{ Key = 'score'; Goal = "Microsoft Secure Score reaches $TargetScorePercent%"; DoneWhen = "Secure Score is at or above $TargetScorePercent% of the points available, the target set for this report."; Extra = '' }
+)
+$apMilestones = @(
+    @{ Idx = 0; Label = 'Today';            Date = $ReportDate },
+    @{ Idx = 1; Label = 'This week';        Date = $ReportDate.AddDays(7) },
+    @{ Idx = 2; Label = 'Within 30 days';   Date = $ReportDate.AddDays(30) },
+    @{ Idx = 3; Label = 'Within 90 days';   Date = $ReportDate.AddDays(90) },
+    @{ Idx = 4; Label = 'Within 12 months'; Date = $ReportDate.AddDays(365) }
+)
+$apPhaseIdx = @{}; for ($i = 0; $i -lt $PhaseOrder.Count; $i++) { $apPhaseIdx[$PhaseOrder[$i]] = $i + 1 }
+function Get-ApDue { param($Idx) if ($null -eq $Idx) { return 'No date set: agree one at the next IT committee' } $m = $apMilestones[[int]$Idx]; return "$($m.Label) (by $($m.Date.ToString('MMM d, yyyy')))" }
+# Findings to goals: a control's own finding goes to the control's area, then the Extra patterns, then Secure Score actions.
+$apCtlKey = @{}; foreach ($a in $glAreaList) { foreach ($c in @($a.Controls)) { $apCtlKey[[string]$c] = $a.Key } }
+$apTasks = @{}; foreach ($k in @(@($PlanGoals | ForEach-Object { $_.Key }) + 'other')) { $apTasks[$k] = New-Object System.Collections.Generic.List[object] }
+foreach ($f in $remediationSorted) {
+    $fn = [string]$f.Finding; $k = $null
+    if ($apCtlKey.ContainsKey($fn) -and $apTasks.ContainsKey($apCtlKey[$fn])) { $k = $apCtlKey[$fn] }
+    if (-not $k) { foreach ($g in $PlanGoals) { if ($g.Extra -and $fn -match $g.Extra) { $k = $g.Key; break } } }
+    if (-not $k -and [string]$f.Section -eq 'Secure Score') { $k = 'score' }
+    if (-not $k) { $k = 'other' }
+    $apTasks[$k].Add($f)
+}
+$apGoalList = New-Object System.Collections.Generic.List[object]
+foreach ($g in $PlanGoals) { $apGoalList.Add($g) }
+if ($apTasks['other'].Count -or $glOther.Count) { $apGoalList.Add(@{ Key = 'other'; Goal = 'Every other finding is closed or formally accepted'; DoneWhen = 'Each remaining item in the remediation plan is fixed, or the IT committee records why the risk is accepted.'; Extra = '' }) }
+# Secure Score projection: points from the Secure Score actions due by each milestone.
+$apScorePts = @{}; foreach ($i in 0..4) { $apScorePts[$i] = 0.0 }
+foreach ($f in $remediationSorted) { if ($f.Points) { $pi = $apPhaseIdx[[string]$f.Phase]; if ($pi) { foreach ($i in $pi..4) { $apScorePts[$i] += [double]$f.Points } } } }
+$apScoreReach = $null
+if ($null -ne $scoreCurrent -and $scoreTarget) { foreach ($i in 0..4) { if (([double]$scoreCurrent + $apScorePts[$i]) -ge [double]$scoreTarget) { $apScoreReach = $i; break } } }
+# Technical goals per business goal: the area's measured controls, plus findings that are not one of those controls.
+$apGoalData = @{}
+foreach ($g in $apGoalList) {
+    $area = $glAreaList | Where-Object { $_.Key -eq $g.Key } | Select-Object -First 1
+    $tech = New-Object System.Collections.Generic.List[object]
+    $ctlNames = @(); if ($area) { $ctlNames = @($area.Controls) }
+    foreach ($c in $ctlNames) {
+        $it = $glItems[[string]$c]; if (-not $it -or $it.Kind -notin @('good', 'warn', 'mid')) { continue }
+        $due = $null
+        if ($it.Kind -ne 'good') {
+            if ($it.Control -eq 'Microsoft Secure Score') { $due = $apScoreReach }
+            elseif ($it.Finding) { $due = $apPhaseIdx[[string]$it.Finding.Phase] }
+        }
+        $tech.Add([pscustomobject]@{ Name = $it.Control; Kind = $it.Kind; Status = $it.Status; Done = ($it.Kind -eq 'good'); Due = $due; Finding = $it.Finding })
+    }
+    foreach ($f in $apTasks[$g.Key]) {
+        if ($ctlNames -contains [string]$f.Finding) { continue }
+        $tech.Add([pscustomobject]@{ Name = [string]$f.Finding; Kind = 'warn'; Status = (Get-GlanceShortText ([string]$f.State) 140); Done = $false; Due = $apPhaseIdx[[string]$f.Phase]; Finding = $f })
+    }
+    $open = @($tech | Where-Object { -not $_.Done })
+    $dated = @($open | Where-Object { $null -ne $_.Due } | ForEach-Object { [int]$_.Due })
+    $target = if (-not $tech.Count) { $null } elseif (-not $open.Count) { 0 } elseif ($dated.Count -eq $open.Count) { ($dated | Measure-Object -Maximum).Maximum } else { $null }
+    if ($g.Key -eq 'score' -and $null -ne $scoreCurrent) { $target = $apScoreReach }
+    $nDone = @($tech | Where-Object { $_.Done }).Count; $nMid = @($tech | Where-Object { $_.Kind -eq 'mid' }).Count
+    $state = if (-not $tech.Count) { 'na' } elseif (-not $open.Count) { 'good' } elseif ($nDone -or $nMid) { 'mid' } else { 'warn' }
+    $word = @{ na = 'Not measured'; good = 'Achieved'; mid = 'In progress'; warn = 'Not started' }[$state]
+    $up = @($tech | Where-Object { $glChange.ContainsKey($_.Name) -and $glChange[$_.Name]['Direction'] -eq 'Improved' }).Count
+    $down = @($tech | Where-Object { $glChange.ContainsKey($_.Name) -and $glChange[$_.Name]['Direction'] -eq 'Regressed' }).Count
+    $trendTxt = if (-not $previous) { 'First report' } elseif ($up -or $down) { ((@($(if ($up) { "$up better" }), $(if ($down) { "$down worse" })) | Where-Object { $_ }) -join ', ') + ' since last report' } else { 'No change since last report' }
+    $owners = @($apTasks[$g.Key] | Where-Object { $_.Playbook } | ForEach-Object { [string]$_.Playbook.Owner } | Select-Object -Unique)
+    $apGoalData[$g.Key] = [pscustomobject]@{ Goal = $g; Area = $area; Tech = $tech; Open = $open; Done = $nDone; Mid = $nMid; Target = $target; State = $state; Word = $word; Trend = $trendTxt; Owners = $owners }
+}
+# Controls in place at each milestone if every finding is closed by its due date.
+$apRated = @($glItems.Values | Where-Object { $_.Kind -in @('good', 'warn', 'mid') })
+$apProj = @{}
+foreach ($i in 0..4) {
+    $n = 0
+    foreach ($it in $apRated) {
+        if ($it.Kind -eq 'good') { $n++; continue }
+        if ($i -eq 0) { continue }
+        if ($it.Control -eq 'Microsoft Secure Score') { if ($null -ne $apScoreReach -and $apScoreReach -le $i) { $n++ }; continue }
+        if ($it.Finding -and $apPhaseIdx[[string]$it.Finding.Phase] -le $i) { $n++ }
+    }
+    $apProj[$i] = $n
+}
+function Get-ApBar { param([int]$Now, [int]$Then, [int]$Total)
+    if ($Total -le 0) { return "<div class='ap-bar'></div>" }
+    $a = [math]::Round(100 * $Now / $Total, 1); $b = [math]::Round(100 * [math]::Max(0, $Then - $Now) / $Total, 1)
+    return "<div class='ap-bar' aria-hidden='true'><i class='good' style='width:$a%'></i><i class='proj' style='width:$b%'></i></div>"
+}
+function Get-ApTaskLi { param($f)
+    $how = if ($f.Playbook) { "$(HtmlEnc $f.Playbook.Owner) &middot; $(HtmlEnc $f.Playbook.Effort)" } elseif ($f.Points) { "Secure Score action, $($f.Points) points" } else { '' }
+    return "<li><span class='gl-prio $($f.Priority)'>$(HtmlEnc $f.Priority)</span><a href='#rem-$($f.Ref)'>$(HtmlEnc $f.Finding)</a> <span class='muted'>$(HtmlEnc $f.Ref)</span>$(if ($how) { "<div class='gl-ev'>$how</div>" })</li>"
+}
+$apTotal = $apRated.Count
+$apLineHtml = New-Object System.Text.StringBuilder
+[void]$apLineHtml.Append("<ol class='ap-line'>")
+foreach ($m in $apMilestones) {
+    $i = $m.Idx
+    $reached = @($apGoalList | Where-Object { $d = $apGoalData[$_.Key]; $null -ne $d.Target -and $d.Target -eq $i -and $d.Tech.Count })
+    $cls = if ($i -eq 0) { 'now' } elseif ($reached.Count) { 'reach' } else { '' }
+    [void]$apLineHtml.Append("<li class='ap-ms $cls'><span class='ap-dot' aria-hidden='true'></span><div class='ap-when'><b>$(HtmlEnc $m.Label)</b><span>$(if ($i -eq 0) { 'Where we are, ' } else { 'by ' })$($m.Date.ToString('MMM d, yyyy'))</span></div>")
+    $pct = if ($apTotal) { [math]::Round(100 * $apProj[$i] / $apTotal) } else { 0 }
+    [void]$apLineHtml.Append("<div class='ap-num'><b>$($apProj[$i]) of $apTotal</b> controls in place ($pct%)</div>$(Get-ApBar $apProj[0] $apProj[$i] $apTotal)")
+    if ($null -ne $scoreCurrent -and $scoreMax) {
+        $apSp = if ($i -eq 0 -and $null -ne $scorePct) { $scorePct } else { [math]::Min(100, [math]::Round(100 * ([double]$scoreCurrent + $apScorePts[$i]) / [double]$scoreMax)) }
+        [void]$apLineHtml.Append("<div class='ap-sub'>Secure Score $apSp%$(if ($i -eq 0) { " (target $TargetScorePercent%)" } elseif ($apSp -ge $TargetScorePercent) { ' &#10004; target met' })</div>")
+    }
+    if ($i -eq 0) {
+        $already = @($apGoalList | Where-Object { $apGoalData[$_.Key].State -eq 'good' })
+        if ($already.Count) { foreach ($g in $already) { [void]$apLineHtml.Append("<span class='ap-flag'>&#9873; Achieved: $(HtmlEnc $g.Goal)</span>") } }
+        else { [void]$apLineHtml.Append("<p class='ap-sub'>No goal is fully achieved yet.</p>") }
+        $openNow = @($remediationSorted).Count
+        [void]$apLineHtml.Append("<p class='ap-sub'>$openNow open finding$(if ($openNow -ne 1) { 's' }) in the remediation plan.</p></li>")
+        continue
+    }
+    foreach ($g in $reached) { [void]$apLineHtml.Append("<span class='ap-flag'>&#9873; Goal reached: $(HtmlEnc $g.Goal)</span>") }
+    $phase = $PhaseOrder[$i - 1]
+    $steps = 0
+    foreach ($g in $apGoalList) {
+        $fs = @($apTasks[$g.Key] | Where-Object { $_.Phase -eq $phase }); if (-not $fs.Count) { continue }
+        $steps += $fs.Count
+        $short = if ($apGoalData[$g.Key].Area) { $apGoalData[$g.Key].Area.Name } else { 'Other findings' }
+        [void]$apLineHtml.Append("<details class='ap-step'><summary><b>$(HtmlEnc $short)</b> &middot; $($fs.Count) step$(if ($fs.Count -ne 1) { 's' })</summary><ol>$((@($fs | ForEach-Object { Get-ApTaskLi $_ })) -join '')</ol></details>")
+    }
+    if (-not $steps) { [void]$apLineHtml.Append("<p class='ap-sub'>Nothing scheduled.</p>") }
+    [void]$apLineHtml.Append('</li>')
+}
+[void]$apLineHtml.Append('</ol>')
+$apGoalsHtml = New-Object System.Text.StringBuilder
+foreach ($g in $apGoalList) {
+    $d = $apGoalData[$g.Key]
+    $nT = $d.Tech.Count
+    $prog = if ($g.Key -eq 'score' -and $null -ne $scoreCurrent -and $scoreTarget) { $sc = [int][math]::Min([double]$scoreCurrent, [double]$scoreTarget); "<b>$scoreCurrent of $scoreTarget</b>target points$(Get-ApBar $sc $sc ([int]$scoreTarget))" }
+            elseif ($nT) { "<b>$($d.Done) of $nT</b>technical goals met$(Get-ApBar $d.Done $d.Done $nT)" }
+            else { '<b>&mdash;</b>not measured' }
+    $tgt = if ($d.State -eq 'good') { '<b>Achieved</b>' } elseif ($d.State -eq 'na') { '<b>&mdash;</b>' }
+           elseif ($null -ne $d.Target) { "<b>$($apMilestones[[int]$d.Target].Date.ToString('MMM d, yyyy'))</b>$(HtmlEnc $apMilestones[[int]$d.Target].Label.ToLower())" }
+           elseif ($g.Key -eq 'score') { '<b>Not by this plan</b>the scheduled actions do not reach the target' }
+           else { '<b>To be set</b>some steps have no date' }
+    $trs = foreach ($t in @($d.Tech | Sort-Object @{ Expression = { if ($_.Done) { 1 } else { 0 } } }, @{ Expression = { if ($null -ne $_.Due) { [int]$_.Due } else { 9 } } }, Name)) {
+        $how = if ($t.Done) { 'Nothing to do; checked again next month.' }
+               elseif ($t.Finding) { "<span class='gl-prio $($t.Finding.Priority)'>$(HtmlEnc $t.Finding.Priority)</span><a href='#rem-$($t.Finding.Ref)'>Steps to fix ($($t.Finding.Ref))</a>$(if ($t.Finding.Playbook) { "<div class='gl-ev'>$(HtmlEnc $t.Finding.Playbook.Owner) &middot; $(HtmlEnc $t.Finding.Playbook.Effort)</div>" })" }
+               elseif ($t.Name -eq 'Microsoft Secure Score') { "Close the Secure Score actions in <a href='#remediation'>section 4</a>." }
+               else { 'No finding raised; review the evidence in section 3.' }
+        "<tr><td><span class='st $($t.Kind)'>$($GlanceIcon[$t.Kind])</span><b>$(HtmlEnc $t.Name)</b></td><td class='$($t.Kind)'>$(HtmlEnc $t.Status)</td><td>$(if ($t.Done) { 'Done' } else { HtmlEnc (Get-ApDue $t.Due) })</td><td>$how</td></tr>"
+    }
+    $tbl = if ($trs) { "<table class='grid gl-tbl'><thead><tr><th style='width:30%'>Technical goal</th><th style='width:22%'>Now</th><th style='width:20%'>Due</th><th>How</th></tr></thead><tbody>$($trs -join '')</tbody></table>" } else { "<p class='muted'>Nothing could be measured for this goal in this run; section 3 says why.</p>" }
+    $who = if ($d.Owners.Count) { "<p class='why'><b>Who does the work:</b> $(HtmlEnc (Join-List $d.Owners '; '))</p>" } else { '' }
+    [void]$apGoalsHtml.Append("<details class='ap-goal $($d.State)' id='ap-$($g.Key)'><summary><span class='gl-pill $($d.State)'><span aria-hidden='true'>$($GlanceIcon[$d.State])</span>$($d.Word)</span><span class='gl-name'><b>$(HtmlEnc $g.Goal)</b><span class='hl'>Done when: $(HtmlEnc $g.DoneWhen)</span>$(if ($d.Area) { "<span class='nw'>Area on At a Glance: $(HtmlEnc $d.Area.Name)</span>" })</span><span class='gl-count'>$prog<small>$(HtmlEnc $d.Trend)</small></span><span class='gl-count'><small>Target</small>$tgt</span><span class='gl-chev' aria-hidden='true'></span></summary>")
+    [void]$apGoalsHtml.Append("<div class='gl-body'>$who$tbl</div></details>")
+}
+$apReached = @($apGoalList | Where-Object { $apGoalData[$_.Key].State -eq 'good' }).Count
+$apCounted = @($apGoalList | Where-Object { $apGoalData[$_.Key].Tech.Count }).Count
+$actionPlanHtml = @"
+<section id='actionplan'><h2>Executive Action Plan</h2>
+<p class='audience'>What the board can hold management to: $apCounted business goals, each with a plain test of when it is done, a target date and the technical goals that achieve it. $apReached of $apCounted $(if ($apReached -eq 1) { 'is' } else { 'are' }) achieved today. The timeline shows how many controls would be in place, and where Microsoft Secure Score would be, at each milestone if every finding is fixed by its due date (solid green: in place now; striped: added by the plan). Dates run from the report date: critical findings this week, high within 30 days, medium within 90 days, low within 12 months. The security officer reports progress against these goals each month, and the next report measures it.</p>
+<div class='gl-tools'><button type='button' id='apOpen'>Show every step</button><button type='button' id='apClose'>Hide them</button><span class='hint'>Click an area under a milestone to see its steps, or a goal below to see its technical goals. Each step links to its playbook in section 4 (<a href='#remediation'>Remediation Plan</a>).</span></div>
+$($apLineHtml.ToString())
+<h3>Goals</h3>
+$($apGoalsHtml.ToString())
+<p class='meta'>Next: the <a href='#overview'>Executive Summary</a>. The same areas are shown control by control on <a href='#glance'>At a Glance</a>.</p>
+</section>
+"@
 $html = @"
 <!DOCTYPE html>
 <html lang='en'><head><meta charset='utf-8'><title>$(HtmlEnc $ClientLabel) - Microsoft 365 Audit Evidence</title><style>$css</style></head>
@@ -4329,6 +4521,7 @@ $html = @"
 <main>
 <div class='pager'><button type='button' id='prevSec' title='Previous section'>&larr; Previous</button><button type='button' id='nextSec' title='Next section'>Next &rarr;</button><span class='title' id='pagerTitle'></span><span class='pos' id='pagerPos'></span><button type='button' id='viewToggle' title='Switch between one section per page and the whole report on one page'>Show all sections</button></div>
 $glanceSectionHtml
+$actionPlanHtml
 <section id='overview'><h2>1. Executive Summary</h2>
 <p class='audience'>Prepared for the board and IT committee of $(HtmlEnc $ClientLabel) from a read-only review of the Microsoft 365 environment on $($ReportDate.ToString('MMMM d, yyyy')). One page answers three questions: are we secure, are we improving, what needs a decision. The detail behind every number follows for the security officer, the IT provider, auditors and examiners.</p>
 <div class='verdict $($verdict.Class)'><div class='vlabel'>Overall</div><div class='vword'>$($verdict.Label)</div><p>$($verdict.Text)</p>
@@ -4585,12 +4778,17 @@ $shareSectionHtml
       document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); document.body.removeChild(a); },500); flash(csv,'Downloaded');
     });
   }
-  window.addEventListener('beforeprint', function(){ document.querySelectorAll('details.steps, details.more, details.gl').forEach(function(d){ d.setAttribute('open',''); }); });
+  window.addEventListener('beforeprint', function(){ document.querySelectorAll('details.steps, details.more, details.gl, details.ap-goal, details.ap-step').forEach(function(d){ d.setAttribute('open',''); }); });
   // At a Glance: show or hide the controls of every area at once
   function setGlance(open){ document.querySelectorAll('details.gl').forEach(function(d){ if(open){ d.setAttribute('open',''); } else { d.removeAttribute('open'); } }); }
   var glOpen=document.getElementById('glOpen'), glClose=document.getElementById('glClose');
   if(glOpen) glOpen.addEventListener('click', function(){ setGlance(true); });
   if(glClose) glClose.addEventListener('click', function(){ setGlance(false); });
+  // Executive Action Plan: show or hide every milestone step and goal at once
+  function setPlan(open){ document.querySelectorAll('details.ap-goal, details.ap-step').forEach(function(d){ if(open){ d.setAttribute('open',''); } else { d.removeAttribute('open'); } }); }
+  var apOpen=document.getElementById('apOpen'), apClose=document.getElementById('apClose');
+  if(apOpen) apOpen.addEventListener('click', function(){ setPlan(true); });
+  if(apClose) apClose.addEventListener('click', function(){ setPlan(false); });
   // "Show all" dialogs for long cells (permissions): the full content sits hidden next to the button
   var moreModal=document.getElementById('moreModal'), moreBody=document.getElementById('moreBody'), moreTitle=document.getElementById('moreTitle'), moreClose=document.getElementById('moreClose');
   function closeMore(){ if(!moreModal||moreModal.hasAttribute('hidden')) return; moreModal.setAttribute('hidden',''); document.body.classList.remove('noscroll'); }

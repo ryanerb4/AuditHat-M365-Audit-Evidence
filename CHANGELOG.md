@@ -6,6 +6,14 @@ the report footer.
 
 ## 2026.11.04
 
+- New second page, **Executive Action Plan**: business goals the board can hold management to
+  (for example "A stolen password alone cannot open any account"), each with a Done when test,
+  status, "N of M technical goals met" with a progress bar, movement since the last report and a
+  target date taken from its findings' phases. A horizontal milestone timeline (Today, This week,
+  30 days, 90 days, 12 months) projects controls in place and Secure Score at each milestone if
+  findings are fixed on time, flags the goals reached, and lists each milestone's steps by area
+  with links to the playbooks. Clicking a goal lists its technical goals (controls and AH-
+  findings) with status, due date, priority, owner and effort.
 - New first page, **At a Glance**: the overall verdict, four count tiles and one row per area
   (Intrusion check and logging, Microsoft Secure Score, Sign-in and MFA, Administrator accounts,
   Device management (Intune), Endpoint protection (Defender), Email, Data sharing and apps). Each
